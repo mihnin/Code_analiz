@@ -12,7 +12,9 @@
       "Bash(powershell -NoProfile -Command \"Add-Type -AssemblyName System.IO.Compression.FileSystem; $z = [System.IO.Compression.ZipFile]::OpenRead\\(''C:\\\\dev\\\\Code_analiz\\\\AI_Scanner.zip''\\); $z.Entries | Select-Object FullName, Length | Format-Table; $z.Dispose\\(\\)\")",
       "Bash(powershell -File -:*)",
       "Bash(powershell -Command \"Remove-Item ''AI_приложение.zip'' -Force; Compress-Archive -Path index.html, styles.css, app.js, logo.png -DestinationPath ''AI_приложение.zip''\")",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }

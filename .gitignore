@@ -4,6 +4,7 @@
 /build
 /tmp
 .env
+claude.md
 # Logs
 logs
 logo.png
