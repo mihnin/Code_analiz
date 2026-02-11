@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CodeSentinel | AI Code Analysis</title>
+    <title>AI сканер</title>
     <link rel="stylesheet" href="styles.css">
     <link rel="icon" href="logo.png" type="image/png">
 </head>
@@ -40,6 +40,8 @@
         <symbol id="i-download" viewBox="0 0 24 24"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
         <symbol id="i-chat" viewBox="0 0 24 24"><path fill="currentColor" d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></symbol>
         <symbol id="i-stop" viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h12v12H6z"/></symbol>
+        <symbol id="i-help" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/></symbol>
+        <symbol id="i-rocket" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2.5s-5 6-5 11.5c0 2.76 2.24 5 5 5s5-2.24 5-5c0-5.5-5-11.5-5-11.5zm0 14.5c-1.66 0-3-1.34-3-3 0-2.61 1.67-5.81 3-7.94 1.33 2.13 3 5.33 3 7.94 0 1.66-1.34 3-3 3z"/></symbol>
     </svg>
 
     <!-- Sidebar -->
@@ -47,8 +49,8 @@
         <div class="sidebar-header">
             <img src="logo.png" alt="УПФЭ" class="sidebar-logo">
             <div class="sidebar-brand">
-                <span class="brand-name">CodeSentinel</span>
-                <span class="brand-sub">AI Code Analysis</span>
+                <span class="brand-name">AI сканер</span>
+                <span class="brand-sub">Анализ исходного кода</span>
             </div>
         </div>
 
@@ -64,6 +66,10 @@
             <a href="#" class="nav-item" data-page="history">
                 <svg class="icon"><use href="#i-history"/></svg>
                 <span>История чата</span>
+            </a>
+            <a href="#" class="nav-item" data-page="help">
+                <svg class="icon"><use href="#i-help"/></svg>
+                <span>Помощь</span>
             </a>
         </nav>
 
@@ -93,8 +99,8 @@
         <section id="page-analysis" class="page active">
             <header class="page-header">
                 <div class="page-header-text">
-                    <h1>Анализ кода</h1>
-                    <p>Ролевой AI-ассистент для анализа исходного кода</p>
+                    <h1>AI сканер</h1>
+                    <p>Повысь эффективность анализа кода, написания ФС и ТЗ с ролевым AI-ассистентом</p>
                 </div>
                 <div class="page-header-actions">
                     <button id="btn-export-chat" class="btn-ghost" title="Экспорт чата">
@@ -142,13 +148,13 @@
                     <div class="panel-header">
                         <span class="panel-title">
                             <svg class="icon"><use href="#i-analysis"/></svg>
-                            Исходный код
+                            Исходный код / ТЗ / ФС
                         </span>
                         <div class="panel-actions">
-                            <label class="btn-ghost btn-sm" id="btn-attach-label" title="Прикрепить .md файл">
+                            <label class="btn-ghost btn-sm" id="btn-attach-label" title="Прикрепить текстовый файл (.txt, .md)">
                                 <svg class="icon"><use href="#i-attach"/></svg>
                                 <span class="btn-text">Файл контекста</span>
-                                <input type="file" id="file-input" accept=".md,.txt,.markdown" hidden>
+                                <input type="file" id="file-input" accept=".txt,.md,.markdown" hidden>
                             </label>
                             <button class="btn-ghost btn-sm" id="btn-paste" title="Вставить из буфера">
                                 <svg class="icon"><use href="#i-copy"/></svg>
@@ -161,13 +167,46 @@
                     <div id="attached-file-info" class="attached-file-info" style="display:none">
                         <svg class="icon"><use href="#i-attach"/></svg>
                         <span id="attached-filename"></span>
+                        <span class="attached-hint">— содержимое будет добавлено как контекст к запросу</span>
                         <button id="btn-remove-file" class="btn-icon-sm" title="Удалить файл">
                             <svg class="icon"><use href="#i-close"/></svg>
                         </button>
                     </div>
-                    <textarea id="code-input" class="code-textarea" placeholder="Вставьте код для анализа..." spellcheck="false"></textarea>
+                    <textarea id="code-input" class="code-textarea" placeholder="Вставьте исходный код, текст ТЗ, ФС или любой текстовый документ...
+
+Файл контекста: .txt, .md (макс. 500 КБ)
+PDF/DOCX — скопируйте текст и вставьте сюда." spellcheck="false"></textarea>
                     <div class="code-panel-footer">
-                        <span id="code-stats" class="code-stats">0 строк | 0 символов</span>
+                        <div class="token-meter">
+                            <div class="token-stats">
+                                <span id="code-stats" class="code-stats">0 строк | 0 символов</span>
+                                <span class="token-separator">|</span>
+                                <span id="token-breakdown" class="token-breakdown" title="Нажмите для деталей">~0 токенов</span>
+                                <button class="help-link-btn" data-help-target="help-tokens" title="Что такое токены?">
+                                    <svg class="icon"><use href="#i-help"/></svg>
+                                </button>
+                            </div>
+                            <div class="token-bar-container">
+                                <div class="token-bar">
+                                    <div id="token-bar-prompt" class="token-bar-segment prompt" style="width:0%"></div>
+                                    <div id="token-bar-input" class="token-bar-segment input" style="width:0%"></div>
+                                    <div id="token-bar-file" class="token-bar-segment file" style="width:0%"></div>
+                                    <div id="token-bar-history" class="token-bar-segment history" style="width:0%"></div>
+                                    <div id="token-bar-reserved" class="token-bar-segment reserved" style="width:0%"></div>
+                                </div>
+                                <div class="token-bar-labels">
+                                    <span id="token-used-label" class="token-used-label">0 / 0</span>
+                                </div>
+                            </div>
+                            <div id="token-details" class="token-details" style="display:none">
+                                <div class="token-detail-row"><span class="td-color prompt"></span><span>Промпт:</span><span id="td-prompt">0</span></div>
+                                <div class="token-detail-row"><span class="td-color input"></span><span>Ввод (код/текст):</span><span id="td-input">0</span></div>
+                                <div class="token-detail-row"><span class="td-color file"></span><span>Файл контекста:</span><span id="td-file">0</span></div>
+                                <div class="token-detail-row"><span class="td-color history"></span><span>История чата:</span><span id="td-history">0</span></div>
+                                <div class="token-detail-row"><span class="td-color reserved"></span><span>Резерв на ответ:</span><span id="td-reserved">0</span></div>
+                                <div class="token-detail-row total"><span></span><span>Итого / Лимит:</span><span id="td-total">0 / 0</span></div>
+                            </div>
+                        </div>
                         <button id="btn-analyze" class="btn-primary btn-analyze" disabled>
                             <svg class="icon"><use href="#i-send"/></svg>
                             <span>Анализировать</span>
@@ -193,8 +232,8 @@
                             <div class="welcome-icon">
                                 <svg class="icon"><use href="#i-brain"/></svg>
                             </div>
-                            <h3>CodeSentinel AI</h3>
-                            <p>Выберите роль, язык и действие, затем вставьте код и нажмите "Анализировать"</p>
+                            <h3>AI сканер</h3>
+                            <p>Вставьте исходный код, ТЗ или функциональную спецификацию, выберите роль и действие</p>
                             <div class="welcome-hints">
                                 <div class="hint-card" data-role="infosec">
                                     <svg class="icon"><use href="#i-security"/></svg>
@@ -264,7 +303,7 @@
                                 </div>
                                 <div>
                                     <h3>Среда выполнения</h3>
-                                    <p>Облачный API (DeepSeek) или локальная модель (LM Studio / Ollama)</p>
+                                    <p>Облачный API (DeepSeek) или локальная модель (LM Studio / Ollama / Xinference)</p>
                                 </div>
                             </div>
                             <div class="toggle-buttons" id="env-toggle">
@@ -290,10 +329,28 @@
                                     </div>
                                 </div>
                                 <div class="form-group">
-                                    <label for="setting-cloud-model">Модель</label>
-                                    <div class="input-with-icon">
-                                        <svg class="icon input-icon"><use href="#i-brain"/></svg>
-                                        <input type="text" id="setting-cloud-model" placeholder="deepseek-chat" value="deepseek-chat">
+                                    <label>Модель DeepSeek</label>
+                                    <div class="model-cards" id="deepseek-model-cards">
+                                        <label class="model-card active">
+                                            <input type="radio" name="deepseek-model" value="deepseek-chat" checked>
+                                            <div class="model-card-inner">
+                                                <div class="model-card-header">
+                                                    <span class="model-card-name">deepseek-chat</span>
+                                                    <span class="model-card-badge">Быстрая</span>
+                                                </div>
+                                                <span class="model-card-desc">Стандартная модель без рассуждений. Быстрые ответы, подходит для большинства задач.</span>
+                                            </div>
+                                        </label>
+                                        <label class="model-card">
+                                            <input type="radio" name="deepseek-model" value="deepseek-reasoner">
+                                            <div class="model-card-inner">
+                                                <div class="model-card-header">
+                                                    <span class="model-card-name">deepseek-reasoner</span>
+                                                    <span class="model-card-badge reasoning">Рассуждающая</span>
+                                                </div>
+                                                <span class="model-card-desc">Модель с цепочкой рассуждений (CoT). Глубокий анализ, медленнее но точнее.</span>
+                                            </div>
+                                        </label>
                                     </div>
                                 </div>
                                 <div class="form-group">
@@ -318,20 +375,89 @@
                                     </div>
                                 </div>
                                 <div class="form-group">
-                                    <label for="setting-local-model">Модель</label>
-                                    <div class="input-with-icon">
-                                        <svg class="icon input-icon"><use href="#i-brain"/></svg>
-                                        <input type="text" id="setting-local-model" placeholder="local-model">
+                                    <label for="setting-local-model">
+                                        Модель
+                                        <span class="label-hint" id="local-model-hint"></span>
+                                    </label>
+                                    <div class="model-select-row">
+                                        <div class="select-wrapper model-select-wrapper">
+                                            <select id="setting-local-model-select" class="model-dropdown">
+                                                <option value="">-- Нажмите "Загрузить" --</option>
+                                            </select>
+                                            <svg class="icon select-chevron"><use href="#i-chevron"/></svg>
+                                        </div>
+                                        <button id="btn-fetch-models" class="btn-outline btn-sm" type="button">
+                                            <svg class="icon"><use href="#i-search"/></svg>
+                                            Загрузить список
+                                        </button>
+                                    </div>
+                                    <div id="local-model-type" class="local-model-type" style="display:none"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Shared Generation Settings -->
+                        <div class="generation-settings">
+                            <h3 class="generation-settings-title">
+                                <svg class="icon"><use href="#i-settings"/></svg>
+                                Параметры генерации
+                                <span class="label-hint">(общие для облака и локальной модели)</span>
+                                <button class="help-link-btn" data-help-target="help-settings" title="Подробнее о параметрах">
+                                    <svg class="icon"><use href="#i-help"/></svg>
+                                </button>
+                            </h3>
+                            <div class="generation-settings-grid three-col">
+                                <div class="form-group">
+                                    <label for="setting-context-window">
+                                        Контекстное окно
+                                        <span class="range-value" id="context-window-value">64K</span>
+                                    </label>
+                                    <select id="setting-context-window" class="model-dropdown">
+                                        <option value="4096">4K</option>
+                                        <option value="8192">8K</option>
+                                        <option value="16384">16K</option>
+                                        <option value="32768">32K</option>
+                                        <option value="65536" selected>64K</option>
+                                        <option value="131072">128K</option>
+                                        <option value="262144">256K</option>
+                                    </select>
+                                    <div class="range-labels">
+                                        <span>Влияет на калькулятор токенов. Для локальных моделей — проверьте в LM Studio / Ollama / Xinference</span>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="setting-max-tokens">
+                                        Макс. токенов ответа
+                                        <span class="range-value" id="max-tokens-value">4096</span>
+                                    </label>
+                                    <input type="range" id="setting-max-tokens" min="256" max="16384" step="256" value="4096" class="range-slider">
+                                    <div class="range-labels">
+                                        <span>256</span>
+                                        <span>8192</span>
+                                        <span>16384</span>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="setting-temperature">
+                                        Температура
+                                        <span class="range-value" id="temperature-value">0.3</span>
+                                    </label>
+                                    <input type="range" id="setting-temperature" min="0" max="2" step="0.1" value="0.3" class="range-slider">
+                                    <div class="range-labels">
+                                        <span>0 — Точный</span>
+                                        <span>1 — Баланс</span>
+                                        <span>2 — Креатив</span>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <div class="form-group">
-                            <button id="btn-test-connection" class="btn-outline">
+                        <div class="connection-actions">
+                            <button id="btn-test-connection" class="btn-primary">
                                 <svg class="icon"><use href="#i-check"/></svg>
                                 Проверить подключение
                             </button>
+                            <span id="test-connection-result" class="connection-result"></span>
                         </div>
                     </div>
                 </div>
@@ -347,6 +473,9 @@
                             <p>Системные промпты и контекст для каждой роли.</p>
                         </div>
                         <div class="card-header-actions">
+                            <button class="help-link-btn" data-help-target="help-prompts" title="Как писать промпты">
+                                <svg class="icon"><use href="#i-help"/></svg>
+                            </button>
                             <div class="search-input-wrapper">
                                 <svg class="icon"><use href="#i-search"/></svg>
                                 <input type="text" id="prompt-search" placeholder="Поиск...">
@@ -365,7 +494,7 @@
                                         <th>Роль</th>
                                         <th>Действие</th>
                                         <th class="col-wide">Системный промпт</th>
-                                        <th>Файл контекста</th>
+                                        <th>Инструкции</th>
                                         <th class="col-actions">Действия</th>
                                     </tr>
                                 </thead>
@@ -403,6 +532,623 @@
                 </div>
             </div>
         </section>
+
+        <!-- ==================== HELP PAGE ==================== -->
+        <section id="page-help" class="page">
+            <header class="page-header">
+                <div class="page-header-text">
+                    <h1>Помощь</h1>
+                    <p>Руководство по работе с приложением</p>
+                </div>
+            </header>
+
+            <div class="help-content">
+                <!-- Quick Navigation -->
+                <nav class="help-toc">
+                    <a href="#" class="help-toc-item" data-scroll="help-about">
+                        <svg class="icon"><use href="#i-brain"/></svg>
+                        <span>О приложении</span>
+                    </a>
+                    <a href="#" class="help-toc-item" data-scroll="help-roles">
+                        <svg class="icon"><use href="#i-security"/></svg>
+                        <span>Роли</span>
+                    </a>
+                    <a href="#" class="help-toc-item" data-scroll="help-economics">
+                        <svg class="icon"><use href="#i-rocket"/></svg>
+                        <span>Эффекты</span>
+                    </a>
+                    <a href="#" class="help-toc-item" data-scroll="help-models">
+                        <svg class="icon"><use href="#i-cloud"/></svg>
+                        <span>Модели</span>
+                    </a>
+                    <a href="#" class="help-toc-item" data-scroll="help-tokens">
+                        <svg class="icon"><use href="#i-analysis"/></svg>
+                        <span>Токены</span>
+                    </a>
+                    <a href="#" class="help-toc-item" data-scroll="help-prompts">
+                        <svg class="icon"><use href="#i-edit"/></svg>
+                        <span>Промпты</span>
+                    </a>
+                    <a href="#" class="help-toc-item" data-scroll="help-settings">
+                        <svg class="icon"><use href="#i-settings"/></svg>
+                        <span>Настройки</span>
+                    </a>
+                </nav>
+
+                <!-- Section: About -->
+                <div class="help-section" id="help-about">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-brain"/></svg>
+                                    О приложении AI сканер
+                                </h2>
+                                <p>Ролевой AI-ассистент для анализа исходного кода</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-text">
+                                <p><strong>AI сканер</strong> — корпоративный инструмент для анализа исходного кода с помощью больших языковых моделей (LLM). Приложение работает полностью автономно, без внешних зависимостей — достаточно открыть файл в браузере.</p>
+
+                                <p>Ключевые возможности:</p>
+                                <ul>
+                                    <li><strong>Ролевой подход</strong> — три предустановленные роли (ИБ-специалист, Консультант, Разработчик), каждая со своим набором специализированных промптов</li>
+                                    <li><strong>Мультиязычность кода</strong> — поддержка ABAP, 1С, Python, JavaScript с учётом специфики каждого языка в промптах</li>
+                                    <li><strong>Гибкость подключения</strong> — облачный API (DeepSeek) или локальные модели (LM Studio, Ollama, Xinference)</li>
+                                    <li><strong>Потоковая генерация</strong> — ответы выводятся в реальном времени по мере генерации</li>
+                                    <li><strong>Контроль бюджета токенов</strong> — визуальный счётчик помогает не превысить контекстное окно модели</li>
+                                    <li><strong>Расширяемость</strong> — вы можете добавлять собственные промпты через матрицу в настройках</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: Roles -->
+                <div class="help-section" id="help-roles">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-security"/></svg>
+                                    Роли и их назначение
+                                </h2>
+                                <p>Три специализированные роли для разных задач</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-roles-grid">
+                                <!-- InfoSec -->
+                                <div class="help-role-card infosec">
+                                    <div class="help-role-header">
+                                        <div class="help-role-icon infosec">
+                                            <svg class="icon"><use href="#i-security"/></svg>
+                                        </div>
+                                        <h3>Информационная безопасность</h3>
+                                    </div>
+                                    <div class="help-role-body">
+                                        <p>Роль для специалистов по ИБ, отделов безопасности и аудиторов.</p>
+                                        <p><strong>Доступные действия:</strong></p>
+                                        <ul>
+                                            <li><strong>Анализ уязвимостей</strong> — поиск уязвимостей по методологии OWASP Top 10, определение CWE-типов, оценка критичности</li>
+                                            <li><strong>Аудит безопасности</strong> — комплексная проверка: аутентификация, криптография, управление данными, конфигурация</li>
+                                        </ul>
+                                        <p class="help-role-usecase"><strong>Пример использования:</strong> Перед выводом модуля в продуктив, ИБ-специалист вставляет код и получает отчёт о потенциальных уязвимостях с рекомендациями по исправлению.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Consultant -->
+                                <div class="help-role-card consultant">
+                                    <div class="help-role-header">
+                                        <div class="help-role-icon consultant">
+                                            <svg class="icon"><use href="#i-consultant"/></svg>
+                                        </div>
+                                        <h3>Консультант</h3>
+                                    </div>
+                                    <div class="help-role-body">
+                                        <p>Роль для бизнес-аналитиков, системных аналитиков и консультантов.</p>
+                                        <p><strong>Доступные действия:</strong></p>
+                                        <ul>
+                                            <li><strong>Объяснить логику</strong> — перевод кода на понятный бизнес-язык, описание входов/выходов, бизнес-правил</li>
+                                            <li><strong>ТЗ на доработку</strong> — автоматическая генерация ТЗ для модификации существующего кода</li>
+                                            <li><strong>ТЗ с нуля</strong> — создание полноценного технического задания на основе анализа кода</li>
+                                        </ul>
+                                        <p class="help-role-usecase"><strong>Пример использования:</strong> Консультант получает код от заказчика, вставляет его в приложение и получает описание бизнес-логики на понятном языке или готовый шаблон ТЗ.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Developer -->
+                                <div class="help-role-card developer">
+                                    <div class="help-role-header">
+                                        <div class="help-role-icon developer">
+                                            <svg class="icon"><use href="#i-developer"/></svg>
+                                        </div>
+                                        <h3>Разработчик</h3>
+                                    </div>
+                                    <div class="help-role-body">
+                                        <p>Роль для разработчиков, тимлидов и архитекторов.</p>
+                                        <p><strong>Доступные действия:</strong></p>
+                                        <ul>
+                                            <li><strong>Рефакторинг</strong> — анализ code smells, предложения по улучшению, переписанный код с применением SOLID/DRY/KISS</li>
+                                            <li><strong>Оценка качества (1-5)</strong> — детальная оценка по 5 критериям: читаемость, архитектура, надёжность, производительность, поддерживаемость</li>
+                                            <li><strong>Анализ производительности</strong> — поиск узких мест, оценка алгоритмической сложности, рекомендации по оптимизации</li>
+                                        </ul>
+                                        <p class="help-role-usecase"><strong>Пример использования:</strong> Разработчик перед код-ревью вставляет свой код и получает автоматическую оценку качества и предложения по рефакторингу.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: Economics -->
+                <div class="help-section" id="help-economics">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-rocket"/></svg>
+                                    Экономические эффекты от использования
+                                </h2>
+                                <p>Как AI сканер экономит время и ресурсы</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-economics-grid">
+                                <div class="help-econ-card">
+                                    <div class="help-econ-number">5-10x</div>
+                                    <div class="help-econ-title">Ускорение код-ревью</div>
+                                    <p>Первичный анализ кода, который занимает у специалиста 1-2 часа, выполняется за 5-10 минут. AI даёт отправную точку для более глубокого ручного анализа.</p>
+                                </div>
+                                <div class="help-econ-card">
+                                    <div class="help-econ-number">-70%</div>
+                                    <div class="help-econ-title">Снижение стоимости аудита</div>
+                                    <p>Автоматизация рутинных проверок (захардкоженные ключи, типовые уязвимости) позволяет ИБ-специалистам фокусироваться на сложных кейсах.</p>
+                                </div>
+                                <div class="help-econ-card">
+                                    <div class="help-econ-number">2-3x</div>
+                                    <div class="help-econ-title">Быстрее подготовка ТЗ</div>
+                                    <p>Генерация ТЗ по коду экономит время аналитика — вместо написания с нуля он получает структурированный черновик для доработки.</p>
+                                </div>
+                                <div class="help-econ-card">
+                                    <div class="help-econ-number">+40%</div>
+                                    <div class="help-econ-title">Рост качества кода</div>
+                                    <p>Регулярное использование оценки качества и рефакторинга формирует культуру чистого кода в команде, снижает технический долг.</p>
+                                </div>
+                            </div>
+
+                            <div class="help-callout">
+                                <svg class="icon"><use href="#i-warning"/></svg>
+                                <div>
+                                    <strong>Важно:</strong> AI-анализ не заменяет экспертизу специалиста. Используйте результаты как отправную точку — финальные решения всегда принимает человек. Качество рекомендаций напрямую зависит от выбранной модели.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: Models -->
+                <div class="help-section" id="help-models">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-cloud"/></svg>
+                                    Модели: качество, рассуждения, выбор
+                                </h2>
+                                <p>Как выбор модели влияет на результат</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-text">
+                                <h3>Качество ответов зависит от модели</h3>
+                                <p>Самый главный фактор, влияющий на качество анализа — <strong>выбранная модель</strong>. Более мощные модели лучше понимают код, находят больше проблем и дают более точные рекомендации. Не все модели одинаково хорошо работают с разными языками программирования.</p>
+
+                                <h3>Модели с рассуждением vs обычные</h3>
+                                <div class="help-compare-grid">
+                                    <div class="help-compare-card">
+                                        <div class="help-compare-header">
+                                            <span class="model-card-badge">Быстрая</span>
+                                            <h4>Стандартные модели</h4>
+                                        </div>
+                                        <p>Например: <code>deepseek-chat</code></p>
+                                        <ul>
+                                            <li>Быстрый отклик (1-3 сек)</li>
+                                            <li>Подходит для простых задач</li>
+                                            <li>Хорошо работает с объяснением кода</li>
+                                            <li>Менее затратна по токенам</li>
+                                            <li>Рекомендуется для большинства задач</li>
+                                        </ul>
+                                    </div>
+                                    <div class="help-compare-card">
+                                        <div class="help-compare-header">
+                                            <span class="model-card-badge reasoning">Рассуждающая</span>
+                                            <h4>Модели с Chain-of-Thought</h4>
+                                        </div>
+                                        <p>Например: <code>deepseek-reasoner</code></p>
+                                        <ul>
+                                            <li>Медленнее (5-15 сек), но глубже</li>
+                                            <li>Лучше для сложного анализа</li>
+                                            <li>Находит неочевидные уязвимости</li>
+                                            <li>Расходует больше токенов</li>
+                                            <li>Рекомендуется для ИБ-аудита</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <h3>Облако vs Локальные модели</h3>
+                                <p><strong>Облачный API (DeepSeek)</strong> — высокое качество, стабильная работа, требуется API-ключ и подключение к интернету. Данные отправляются на сервер провайдера.</p>
+                                <p><strong>Локальные модели (LM Studio / Ollama / Xinference)</strong> — данные не покидают вашу машину, полная конфиденциальность. Качество зависит от размера модели и мощности оборудования. Для корпоративного анализа рекомендуются модели от 13B параметров.</p>
+
+                                <h3>Провайдеры локальных моделей</h3>
+                                <div class="help-compare-grid" style="grid-template-columns: 1fr 1fr 1fr">
+                                    <div class="help-compare-card">
+                                        <div class="help-compare-header">
+                                            <h4>LM Studio</h4>
+                                        </div>
+                                        <p>Десктоп-приложение с GUI</p>
+                                        <ul>
+                                            <li>Удобный интерфейс</li>
+                                            <li>Встроенный каталог моделей</li>
+                                            <li>По умолчанию: <code>localhost:1234</code></li>
+                                            <li>Отдаёт <code>context_length</code> в API</li>
+                                        </ul>
+                                    </div>
+                                    <div class="help-compare-card">
+                                        <div class="help-compare-header">
+                                            <h4>Ollama</h4>
+                                        </div>
+                                        <p>CLI-инструмент, лёгкий</p>
+                                        <ul>
+                                            <li>Управление через терминал</li>
+                                            <li>Простая установка моделей</li>
+                                            <li>По умолчанию: <code>localhost:11434</code></li>
+                                            <li>Контекст: <code>ollama show модель</code></li>
+                                        </ul>
+                                    </div>
+                                    <div class="help-compare-card">
+                                        <div class="help-compare-header">
+                                            <h4>Xinference</h4>
+                                        </div>
+                                        <p>Платформа инференса (Xorbits)</p>
+                                        <ul>
+                                            <li>Веб-интерфейс управления</li>
+                                            <li>LLM + Embedding + Image</li>
+                                            <li>По умолчанию: <code>localhost:9997</code></li>
+                                            <li>Корпоративное развёртывание</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <div class="help-callout info">
+                                    <svg class="icon"><use href="#i-brain"/></svg>
+                                    <div>
+                                        <strong>Совет:</strong> Если работаете с конфиденциальным кодом — используйте локальные модели. Для максимального качества анализа — облачные API с мощными моделями.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: Tokens -->
+                <div class="help-section" id="help-tokens">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-analysis"/></svg>
+                                    Токены и контекстное окно
+                                </h2>
+                                <p>Как работает подсчёт токенов в приложении</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-text">
+                                <h3>Что такое токены?</h3>
+                                <p><strong>Токен</strong> — это минимальная единица текста для LLM-модели. Это не символ и не слово, а что-то среднее: часть слова, слово целиком или знак пунктуации. Модели «думают» токенами, и у каждой модели есть лимит на их количество.</p>
+
+                                <div class="help-token-examples">
+                                    <div class="help-token-example">
+                                        <span class="help-token-label">Латиница / код:</span>
+                                        <span class="help-token-value">~4 символа = 1 токен</span>
+                                        <span class="help-token-sample"><code>function</code> = ~2 токена</span>
+                                    </div>
+                                    <div class="help-token-example">
+                                        <span class="help-token-label">Кириллица:</span>
+                                        <span class="help-token-value">~2 символа = 1 токен</span>
+                                        <span class="help-token-sample"><code>Проверка</code> = ~4 токена</span>
+                                    </div>
+                                </div>
+
+                                <h3>Контекстное окно</h3>
+                                <p><strong>Контекстное окно</strong> — это максимальное количество токенов, которое модель может обработать за один запрос. Сюда входит <strong>всё</strong>: и ваш код, и промпт, и история чата, и ответ модели.</p>
+
+                                <div class="help-context-formula">
+                                    <div class="help-formula-item prompt">Системный промпт</div>
+                                    <span>+</span>
+                                    <div class="help-formula-item input">Ваш код / текст</div>
+                                    <span>+</span>
+                                    <div class="help-formula-item file">Файл контекста</div>
+                                    <span>+</span>
+                                    <div class="help-formula-item history">История чата</div>
+                                    <span>+</span>
+                                    <div class="help-formula-item reserved">Резерв на ответ</div>
+                                    <span>&le;</span>
+                                    <div class="help-formula-item total">Контекстное окно</div>
+                                </div>
+
+                                <h3>Как читать шкалу токенов</h3>
+                                <p>В нижней части панели кода отображается цветная шкала бюджета токенов:</p>
+                                <div class="help-token-legend">
+                                    <div class="help-legend-item"><span class="help-legend-color prompt"></span> <strong>Фиолетовый</strong> — системный промпт (инструкция для AI)</div>
+                                    <div class="help-legend-item"><span class="help-legend-color input"></span> <strong>Синий</strong> — ваш код или текст</div>
+                                    <div class="help-legend-item"><span class="help-legend-color file"></span> <strong>Жёлтый</strong> — прикреплённый файл контекста</div>
+                                    <div class="help-legend-item"><span class="help-legend-color history"></span> <strong>Бирюзовый</strong> — история переписки с AI</div>
+                                    <div class="help-legend-item"><span class="help-legend-color reserved"></span> <strong>Серый</strong> — зарезервировано для ответа модели</div>
+                                </div>
+
+                                <h3>Длина чата и контекстное окно</h3>
+                                <p>При каждом уточняющем вопросе <strong>вся предыдущая переписка</strong> повторно отправляется модели — так устроен протокол OpenAI Chat API. Это значит:</p>
+                                <ul>
+                                    <li>Чем длиннее диалог, тем больше токенов расходуется на историю</li>
+                                    <li>При превышении контекстного окна шкала становится <span style="color: var(--danger)">красной</span> — дальнейшие вопросы могут быть обрезаны или вызвать ошибку</li>
+                                    <li>Когда шкала <span style="color: var(--warning)">жёлтая</span> (>80%) — рекомендуется начать новый чат</li>
+                                    <li>Для длинных диалогов выбирайте модели с большим контекстным окном (64K-128K)</li>
+                                </ul>
+
+                                <div class="help-callout">
+                                    <svg class="icon"><use href="#i-warning"/></svg>
+                                    <div>
+                                        <strong>Совет:</strong> Нажмите на область токенов в панели кода, чтобы увидеть детальную разбивку по компонентам. Если шкала заполнена — очистите чат и начните новый анализ.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: Prompts -->
+                <div class="help-section" id="help-prompts">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-edit"/></svg>
+                                    Как писать промпты
+                                </h2>
+                                <p>Руководство по созданию и редактированию промптов</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-text">
+                                <h3>Зачем нужны пользовательские промпты?</h3>
+                                <p>AI сканер поставляется с 8 предустановленными промптами, но вы можете добавить собственные через <strong>Настройки → Матрица промптов → Добавить</strong>. Это позволяет адаптировать приложение под специфику вашей организации.</p>
+
+                                <h3>Структура хорошего промпта</h3>
+                                <div class="help-prompt-structure">
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">1</div>
+                                        <div>
+                                            <h4>Роль и экспертиза</h4>
+                                            <p>Начните с определения роли AI: кто он, какой у него опыт, в чём его экспертиза.</p>
+                                            <code class="help-code-example">Ты — эксперт по информационной безопасности SAP с 10-летним опытом аудита ABAP-кода.</code>
+                                        </div>
+                                    </div>
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">2</div>
+                                        <div>
+                                            <h4>Задача</h4>
+                                            <p>Чётко опишите, что именно нужно сделать с предоставленным кодом.</p>
+                                            <code class="help-code-example">Проведи анализ данного кода на соответствие стандартам безопасной разработки компании.</code>
+                                        </div>
+                                    </div>
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">3</div>
+                                        <div>
+                                            <h4>Формат ответа</h4>
+                                            <p>Укажите желаемую структуру ответа — заголовки, списки, таблицы, оценки.</p>
+                                            <code class="help-code-example">Для каждой проблемы укажи: Тип, Критичность (1-5), Строка кода, Рекомендация.</code>
+                                        </div>
+                                    </div>
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">4</div>
+                                        <div>
+                                            <h4>Специфика языка</h4>
+                                            <p>Добавьте конкретные указания для целевых языков программирования.</p>
+                                            <code class="help-code-example">Для ABAP: проверь AUTHORITY-CHECK, динамические вызовы, захардкоженные учётные данные.</code>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <h3>Примеры кастомных промптов</h3>
+                                <div class="help-prompt-examples">
+                                    <div class="help-example-card">
+                                        <h4>Проверка на соответствие стандартам компании</h4>
+                                        <p class="help-example-role">Роль: infosec</p>
+                                        <pre class="help-example-code">Ты — внутренний аудитор кода компании. Проверь код на соответствие корпоративным стандартам:
+1. Именование переменных (венгерская нотация для ABAP)
+2. Обязательные комментарии к функциям
+3. Обработка исключений в каждом блоке
+4. Логирование операций с БД
+Формат: таблица [Правило | Статус | Комментарий]</pre>
+                                    </div>
+                                    <div class="help-example-card">
+                                        <h4>Генерация unit-тестов</h4>
+                                        <p class="help-example-role">Роль: developer</p>
+                                        <pre class="help-example-code">Ты — QA-инженер. Проанализируй код и сгенерируй набор unit-тестов.
+Для каждого метода/функции создай тесты:
+1. Позитивный сценарий (ожидаемый ввод)
+2. Негативный сценарий (невалидный ввод)
+3. Граничные значения
+Используй формат тестового фреймворка, подходящий языку.</pre>
+                                    </div>
+                                </div>
+
+                                <div class="help-callout info">
+                                    <svg class="icon"><use href="#i-brain"/></svg>
+                                    <div>
+                                        <strong>Совет:</strong> Чем конкретнее промпт — тем лучше результат. Указывайте формат вывода, критерии оценки, специфику языка. Избегайте расплывчатых формулировок типа «проанализируй всё».
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: Settings -->
+                <div class="help-section" id="help-settings">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-settings"/></svg>
+                                    Настройки приложения
+                                </h2>
+                                <p>Описание параметров генерации и рекомендации</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-text">
+                                <h3>Параметры генерации</h3>
+
+                                <div class="help-settings-grid">
+                                    <!-- Context Window -->
+                                    <div class="help-setting-card">
+                                        <div class="help-setting-header">
+                                            <h4>Контекстное окно</h4>
+                                            <span class="help-setting-default">По умолчанию: 64K</span>
+                                        </div>
+                                        <p>Максимальный объём текста (в токенах), который модель может обработать за один запрос. Включает <strong>всё</strong>: системный промпт, ваш код/текст, прикреплённые файлы, историю чата и ответ модели.</p>
+
+                                        <p><strong>Зачем это нужно?</strong> Этот параметр управляет <strong>калькулятором токенов</strong> — цветной шкалой в нижней части панели кода на главном экране. Калькулятор показывает, сколько токенов занято и сколько осталось для ответа. Если значение не совпадает с реальным окном вашей модели — шкала будет показывать неверные данные.</p>
+
+                                        <div class="help-setting-values">
+                                            <span><strong>4K</strong> — маленькие локальные модели (1-3B параметров)</span>
+                                            <span><strong>8K</strong> — стандарт для большинства локальных моделей (по умолчанию при выборе локального режима)</span>
+                                            <span><strong>16-32K</strong> — продвинутые локальные модели с расширенным контекстом</span>
+                                            <span><strong>64K</strong> — облачные API (по умолчанию при выборе облачного режима)</span>
+                                            <span><strong>128-256K</strong> — модели с очень большим окном, для длинных диалогов и больших файлов</span>
+                                        </div>
+
+                                        <div class="help-callout">
+                                            <svg class="icon"><use href="#i-warning"/></svg>
+                                            <div>
+                                                <strong>Для локальных моделей:</strong> при загрузке списка моделей приложение попытается определить размер контекстного окна автоматически. Если это не удалось — <strong>выставьте значение вручную</strong>, ориентируясь на настройки вашего сервера. Как узнать реальный размер: в LM Studio — вкладка модели → Context Length; в Ollama — <code>ollama show имя_модели</code>; в Xinference — веб-интерфейс → параметры модели. Если поставить больше, чем поддерживает модель — запросы будут обрезаны или вызовут ошибку. Если меньше — шкала токенов будет преждевременно показывать «переполнение».
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Max Tokens -->
+                                    <div class="help-setting-card">
+                                        <div class="help-setting-header">
+                                            <h4>Макс. токенов ответа</h4>
+                                            <span class="help-setting-default">По умолчанию: 4096</span>
+                                        </div>
+                                        <p>Максимальная длина ответа модели. Если ответ сложный и длинный, модель остановится при достижении этого лимита.</p>
+                                        <div class="help-setting-values">
+                                            <span><strong>256-1024</strong> — для коротких ответов (оценка качества, краткое описание)</span>
+                                            <span><strong>2048-4096</strong> — для стандартного анализа (рекомендуется)</span>
+                                            <span><strong>8192-16384</strong> — для длинных ответов (полный рефакторинг, подробное ТЗ)</span>
+                                        </div>
+                                        <p class="help-setting-tip">Учтите: токены ответа «отъедают» бюджет контекстного окна. Если ставите 16384 при окне 64K — на ввод останется только 48K.</p>
+                                    </div>
+
+                                    <!-- Temperature -->
+                                    <div class="help-setting-card">
+                                        <div class="help-setting-header">
+                                            <h4>Температура</h4>
+                                            <span class="help-setting-default">По умолчанию: 0.3</span>
+                                        </div>
+                                        <p>Контролирует «креативность» модели. Низкая температура — модель выбирает наиболее вероятные ответы (точнее). Высокая — более разнообразные и нестандартные.</p>
+                                        <div class="help-setting-values">
+                                            <span><strong>0 — 0.3</strong> — точный, детерминированный анализ (рекомендуется для кода)</span>
+                                            <span><strong>0.5 — 0.7</strong> — баланс точности и креативности</span>
+                                            <span><strong>1.0 — 2.0</strong> — креативные задачи (не рекомендуется для анализа кода)</span>
+                                        </div>
+                                        <p class="help-setting-tip">Для анализа кода, аудита безопасности и рефакторинга используйте <strong>0.1 — 0.3</strong>. Для генерации ТЗ и описаний можно поднять до <strong>0.5</strong>.</p>
+                                    </div>
+                                </div>
+
+                                <h3>Рекомендованные параметры по задачам</h3>
+                                <table class="help-params-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Задача</th>
+                                            <th>Модель</th>
+                                            <th>Температура</th>
+                                            <th>Макс. токенов</th>
+                                            <th>Контекст</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td>Анализ уязвимостей</td>
+                                            <td>рассуждающая</td>
+                                            <td>0.1</td>
+                                            <td>4096</td>
+                                            <td>по модели</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Аудит безопасности</td>
+                                            <td>рассуждающая</td>
+                                            <td>0.2</td>
+                                            <td>8192</td>
+                                            <td>по модели</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Объяснить логику</td>
+                                            <td>стандартная</td>
+                                            <td>0.3</td>
+                                            <td>4096</td>
+                                            <td>по модели</td>
+                                        </tr>
+                                        <tr>
+                                            <td>ТЗ на доработку / с нуля</td>
+                                            <td>стандартная</td>
+                                            <td>0.4</td>
+                                            <td>8192</td>
+                                            <td>по модели</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Рефакторинг</td>
+                                            <td>рассуждающая</td>
+                                            <td>0.2</td>
+                                            <td>8192</td>
+                                            <td>по модели</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Оценка качества</td>
+                                            <td>стандартная</td>
+                                            <td>0.2</td>
+                                            <td>4096</td>
+                                            <td>по модели</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Анализ производительности</td>
+                                            <td>рассуждающая</td>
+                                            <td>0.2</td>
+                                            <td>4096</td>
+                                            <td>по модели</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+
+                                <h3>Прочие настройки</h3>
+                                <ul>
+                                    <li><strong>Среда выполнения</strong> — переключение между облачным API (DeepSeek) и локальными моделями (LM Studio / Ollama / Xinference)</li>
+                                    <li><strong>API ключ</strong> — секретный ключ для доступа к облачному API. Хранится только в localStorage вашего браузера</li>
+                                    <li><strong>Base URL</strong> — адрес API-сервера. Для DeepSeek: <code>https://api.deepseek.com</code>, для локальных: <code>http://localhost:1234</code></li>
+                                    <li><strong>Матрица промптов</strong> — набор системных промптов для каждой роли. Можно редактировать, добавлять и удалять</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
     </main>
 
     <!-- Modal: Edit Prompt -->
@@ -432,8 +1178,21 @@
                     <textarea id="modal-prompt" rows="8" placeholder="Текст системного промпта..."></textarea>
                 </div>
                 <div class="form-group">
-                    <label for="modal-context">Путь к файлу контекста</label>
-                    <input type="text" id="modal-context" placeholder="policy.md (необязательно)">
+                    <label>Файл инструкций <span class="label-hint">Дополняет системный промпт (стандарты, политики, правила)</span></label>
+                    <div class="modal-file-picker">
+                        <label class="btn-outline btn-sm modal-file-btn">
+                            <svg class="icon"><use href="#i-attach"/></svg>
+                            <span>Выбрать файл</span>
+                            <input type="file" id="modal-context-file" accept=".txt,.md,.markdown" hidden>
+                        </label>
+                        <div id="modal-context-info" class="modal-file-info" style="display:none">
+                            <svg class="icon"><use href="#i-attach"/></svg>
+                            <span id="modal-context-filename"></span>
+                            <button type="button" id="btn-modal-context-clear" class="btn-icon-sm" title="Удалить файл">
+                                <svg class="icon"><use href="#i-close"/></svg>
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">

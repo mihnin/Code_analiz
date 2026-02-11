@@ -1,7 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(test:*)",
+      "Bash(node:*)",
+      "Bash(powershell -Command \"Compress-Archive -Path ''index.html'',''styles.css'',''app.js'',''logo.png'',''промт.md'' -DestinationPath ''AI_Scanner.zip'' -Force\")",
+      "Bash(powershell -Command \"Test-Path ''C:\\\\dev\\\\Code_analiz\\\\AI_Scanner.zip''\")",
+      "Bash(powershell -Command \"\\(Get-Item ''C:\\\\dev\\\\Code_analiz\\\\AI_Scanner.zip''\\).Length / 1KB\")",
+      "Bash(powershell -Command \"Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead\\(''C:\\\\dev\\\\Code_analiz\\\\AI_Scanner.zip''\\).Entries | ForEach-Object { ''{0} \\({1:N1} KB\\)'' -f $_FullName, \\($_Length / 1KB\\) }\")",
+      "Bash(powershell -NoProfile -Command \"$zip = [System.IO.Compression.ZipFile]::OpenRead\\(''C:\\\\dev\\\\Code_analiz\\\\AI_Scanner.zip''\\); foreach\\($e in $zip.Entries\\){ Write-Host $e.FullName $e.Length }; $zip.Dispose\\(\\)\")",
+      "Bash(powershell -NoProfile -Command \"Add-Type -AssemblyName System.IO.Compression.FileSystem; $z = [System.IO.Compression.ZipFile]::OpenRead\\(''C:\\\\dev\\\\Code_analiz\\\\AI_Scanner.zip''\\); $z.Entries | Select-Object FullName, Length | Format-Table; $z.Dispose\\(\\)\")",
+      "Bash(powershell -File -:*)",
+      "Bash(powershell -Command \"Remove-Item ''AI_приложение.zip'' -Force; Compress-Archive -Path index.html, styles.css, app.js, logo.png -DestinationPath ''AI_приложение.zip''\")",
+      "Bash(git add:*)"
     ]
   }
 }

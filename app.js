@@ -1,5 +1,5 @@
 /* ============================================================
-   CodeSentinel — AI Code Analysis Application
+   AI сканер — AI Code Analysis Application
    Pure Vanilla JS (ES6+), No Dependencies
    ============================================================ */
 
@@ -265,6 +265,24 @@ const ROLES = {
     }
 };
 
+/* ============================================================
+   REASONING MODEL DETECTION (heuristic by name)
+   ============================================================ */
+const REASONING_PATTERNS = [
+    /\br1\b/i,          // deepseek-r1, r1-distill, etc.
+    /reasoner/i,        // deepseek-reasoner
+    /thinking/i,        // models with thinking in name
+    /\bcot\b/i,         // chain-of-thought
+    /\breason/i,        // reasoning models
+    /qwen3/i,           // Qwen3 family supports thinking by default
+    /qwq/i,             // QwQ reasoning model
+];
+
+function isLikelyReasoningModel(modelName) {
+    if (!modelName) return false;
+    return REASONING_PATTERNS.some(pattern => pattern.test(modelName));
+}
+
 const LANGUAGES = {
     abap: 'ABAP',
     '1c': '1С',
@@ -294,8 +312,11 @@ class AppState {
             cloudApiKey: '',
             cloudModel: 'deepseek-chat',
             cloudUrl: 'https://api.deepseek.com',
-            localUrl: 'http://localhost:1234',
-            localModel: ''
+            localUrl: 'http://172.16.33.12:9997',
+            localModel: '',
+            temperature: 0.3,
+            maxTokens: 4096,
+            contextWindow: 65536
         };
 
         // Prompts
@@ -402,7 +423,7 @@ class LLMService {
             };
         }
         return {
-            url: (s.localUrl || 'http://localhost:1234').replace(/\/+$/, '') + '/v1/chat/completions',
+            url: (s.localUrl || 'http://172.16.33.12:9997').replace(/\/+$/, '') + '/v1/chat/completions',
             apiKey: '',
             model: s.localModel || 'local-model'
         };
@@ -424,8 +445,8 @@ class LLMService {
             model: config.model,
             messages: messages,
             stream: true,
-            temperature: 0.3,
-            max_tokens: 4096
+            temperature: this.state.settings.temperature,
+            max_tokens: this.state.settings.maxTokens
         };
 
         const response = await fetch(config.url, {
@@ -449,6 +470,7 @@ class LLMService {
         const decoder = new TextDecoder();
         let buffer = '';
         let fullContent = '';
+        let fullReasoning = '';
 
         while (true) {
             const { done, value } = await reader.read();
@@ -467,16 +489,23 @@ class LLMService {
 
                 try {
                     const parsed = JSON.parse(data);
-                    const delta = parsed.choices?.[0]?.delta?.content;
-                    if (delta) {
-                        fullContent += delta;
-                        onChunk(delta, fullContent);
+                    const delta = parsed.choices?.[0]?.delta;
+                    if (!delta) continue;
+
+                    const reasoningDelta = delta.reasoning_content || null;
+                    const contentDelta = delta.content || null;
+
+                    if (reasoningDelta) fullReasoning += reasoningDelta;
+                    if (contentDelta) fullContent += contentDelta;
+
+                    if (reasoningDelta || contentDelta) {
+                        onChunk({ contentDelta, reasoningDelta, fullContent, fullReasoning });
                     }
                 } catch { /* skip malformed chunks */ }
             }
         }
 
-        return fullContent;
+        return { content: fullContent, reasoning: fullReasoning };
     }
 
     async testConnection() {
@@ -506,6 +535,27 @@ class LLMService {
 
         const json = await response.json();
         return json.model || config.model;
+    }
+
+    async fetchLocalModels() {
+        const baseUrl = (this.state.settings.localUrl || 'http://172.16.33.12:9997').replace(/\/+$/, '');
+        const response = await fetch(`${baseUrl}/v1/models`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(10000)
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const json = await response.json();
+        const models = json.data || json.models || [];
+        return models.map(m => ({
+            id: m.id || m.name || m.model,
+            name: m.id || m.name || m.model,
+            owned_by: m.owned_by || '',
+            contextLength: m.context_length || m.max_model_len || m.context_window || 0
+        })).filter(m => m.id);
     }
 }
 
@@ -569,12 +619,21 @@ class MarkdownRenderer {
         // Tables
         html = MarkdownRenderer.renderTables(html);
 
-        // Unordered lists
-        html = html.replace(/^(\s*)-\s+(.+)$/gm, '<li>$2</li>');
-        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+        // Unordered lists — mark with temporary tags
+        html = html.replace(/^(\s*)-\s+(.+)$/gm, '<uli>$2</uli>');
 
-        // Ordered lists
-        html = html.replace(/^(\s*)\d+\.\s+(.+)$/gm, '<li>$2</li>');
+        // Ordered lists — mark with temporary tags
+        html = html.replace(/^(\s*)\d+\.\s+(.+)$/gm, '<oli>$2</oli>');
+
+        // Wrap consecutive unordered list items
+        html = html.replace(/(<uli>[\s\S]*?<\/uli>\n?)+/g, (match) => {
+            return '<ul>' + match.replace(/<uli>/g, '<li>').replace(/<\/uli>/g, '</li>') + '</ul>';
+        });
+
+        // Wrap consecutive ordered list items
+        html = html.replace(/(<oli>[\s\S]*?<\/oli>\n?)+/g, (match) => {
+            return '<ol>' + match.replace(/<oli>/g, '<li>').replace(/<\/oli>/g, '</li>') + '</ol>';
+        });
 
         // Paragraphs: wrap remaining text lines
         html = html.replace(/^(?!<[a-z/])((?!%%).+)$/gm, '<p>$1</p>');
@@ -615,6 +674,33 @@ class MarkdownRenderer {
 /* ============================================================
    TOAST NOTIFICATIONS
    ============================================================ */
+/* ============================================================
+   TOKEN ESTIMATOR
+   BPE tokenizers: English ~4 chars/token, Cyrillic ~2 chars/token
+   ============================================================ */
+class TokenEstimator {
+    static estimate(text) {
+        if (!text) return 0;
+        let cyrCount = 0;
+        let otherCount = 0;
+        for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i);
+            if (code >= 0x0400 && code <= 0x04FF) {
+                cyrCount++;
+            } else {
+                otherCount++;
+            }
+        }
+        // Cyrillic: ~2 chars per token, Latin/code: ~4 chars per token
+        return Math.ceil(cyrCount / 2 + otherCount / 4);
+    }
+
+    static formatCount(n) {
+        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+        return String(n);
+    }
+}
+
 class Toast {
     static show(message, type = 'success', duration = 4000) {
         const container = document.getElementById('toast-container');
@@ -648,6 +734,8 @@ class Application {
         this.state = new AppState();
         this.llm = new LLMService(this.state);
         this.editingPromptId = null;
+        this._modalContextFile = '';
+        this._modalContextContent = '';
         this.init();
     }
 
@@ -656,9 +744,11 @@ class Application {
         this.bindAnalysisPage();
         this.bindSettingsPage();
         this.bindHistoryPage();
+        this.bindHelpPage();
         this.bindModals();
         this.bindMobileMenu();
         this.bindSidebarToggle();
+        this.bindHelpLinks();
 
         this.renderActionButtons();
         this.renderSettingsForm();
@@ -666,6 +756,8 @@ class Application {
         this.renderHistory();
         this.updateConnectionStatus();
         this.selectFirstAction();
+        this.bindTokenMeter();
+        this.bindGlobalKeys();
     }
 
     /* ------ Navigation ------ */
@@ -836,14 +928,40 @@ class Application {
     }
 
     handleFileAttach(file) {
+        const MAX_FILE_SIZE = 512 * 1024; // 500 KB
+
+        if (file.size > MAX_FILE_SIZE) {
+            const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+            Toast.show(`Файл слишком большой (${sizeMB} МБ). Максимум: 500 КБ`, 'error', 5000);
+            document.getElementById('file-input').value = '';
+            return;
+        }
+
         const reader = new FileReader();
         reader.onload = (e) => {
+            const content = e.target.result;
+            // Check if content looks like binary (too many non-printable chars)
+            const sample = content.substring(0, 1000);
+            const nonPrintable = (sample.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
+            if (nonPrintable > sample.length * 0.1) {
+                Toast.show('Файл содержит бинарные данные. Поддерживаются только текстовые форматы (.txt, .md, .json и др.)', 'error', 5000);
+                document.getElementById('file-input').value = '';
+                return;
+            }
+
             this.state.attachedFile = file.name;
-            this.state.attachedFileContent = e.target.result;
+            this.state.attachedFileContent = content;
             const info = document.getElementById('attached-file-info');
-            document.getElementById('attached-filename').textContent = file.name;
+            const sizeLabel = file.size < 1024
+                ? `${file.size} Б`
+                : `${(file.size / 1024).toFixed(1)} КБ`;
+            document.getElementById('attached-filename').textContent = `${file.name} (${sizeLabel})`;
             info.style.display = 'flex';
-            Toast.show(`Файл "${file.name}" прикреплён`);
+            Toast.show(`Файл "${file.name}" прикреплён (${sizeLabel})`);
+            this.updateTokenMeter();
+        };
+        reader.onerror = () => {
+            Toast.show('Ошибка чтения файла', 'error');
         };
         reader.readAsText(file);
     }
@@ -853,19 +971,91 @@ class Application {
         this.state.attachedFileContent = '';
         document.getElementById('attached-file-info').style.display = 'none';
         document.getElementById('file-input').value = '';
+        this.updateTokenMeter();
     }
 
     updateCodeStats() {
         const code = document.getElementById('code-input').value;
         const lines = code ? code.split('\n').length : 0;
         const chars = code.length;
-        document.getElementById('code-stats').textContent = `${lines} строк | ${chars} символов`;
+        document.getElementById('code-stats').textContent = `${lines} строк | ${chars} симв.`;
+        this.updateTokenMeter();
     }
 
     updateAnalyzeButton() {
         const code = document.getElementById('code-input').value.trim();
         const btn = document.getElementById('btn-analyze');
         btn.disabled = !code || !this.state.selectedAction || this.state.isGenerating;
+    }
+
+    updateTokenMeter() {
+        const prompt = this.state.getPromptById(this.state.selectedAction);
+        const promptText = prompt ? (prompt.systemPrompt + (prompt.contextContent || '')) : '';
+        const codeText = document.getElementById('code-input').value;
+        const fileText = this.state.attachedFileContent || '';
+
+        // Estimate tokens for each part
+        const promptTokens = TokenEstimator.estimate(promptText);
+        const inputTokens = TokenEstimator.estimate(codeText);
+        const fileTokens = TokenEstimator.estimate(fileText);
+
+        // History tokens: sum of all messages in conversation
+        let historyTokens = 0;
+        for (const msg of this.state.conversationHistory) {
+            historyTokens += TokenEstimator.estimate(msg.content);
+        }
+
+        const reservedTokens = this.state.settings.maxTokens;
+        const contextWindow = this.state.settings.contextWindow;
+
+        const usedTokens = promptTokens + inputTokens + fileTokens + historyTokens;
+        const totalNeeded = usedTokens + reservedTokens;
+
+        // Update breakdown text
+        const breakdown = document.getElementById('token-breakdown');
+        breakdown.textContent = `~${TokenEstimator.formatCount(usedTokens)} токенов ввода`;
+        if (totalNeeded > contextWindow) {
+            breakdown.className = 'token-breakdown over';
+        } else if (totalNeeded > contextWindow * 0.8) {
+            breakdown.className = 'token-breakdown warn';
+        } else {
+            breakdown.className = 'token-breakdown ok';
+        }
+
+        // Update bar segments
+        const pct = (v) => Math.min((v / contextWindow) * 100, 100);
+        document.getElementById('token-bar-prompt').style.width = pct(promptTokens) + '%';
+        document.getElementById('token-bar-input').style.width = pct(inputTokens) + '%';
+        document.getElementById('token-bar-file').style.width = pct(fileTokens) + '%';
+        document.getElementById('token-bar-history').style.width = pct(historyTokens) + '%';
+        document.getElementById('token-bar-reserved').style.width = pct(reservedTokens) + '%';
+
+        // Used label
+        document.getElementById('token-used-label').textContent =
+            `${TokenEstimator.formatCount(totalNeeded)} / ${TokenEstimator.formatCount(contextWindow)}`;
+
+        // Details panel
+        document.getElementById('td-prompt').textContent = TokenEstimator.formatCount(promptTokens);
+        document.getElementById('td-input').textContent = TokenEstimator.formatCount(inputTokens);
+        document.getElementById('td-file').textContent = TokenEstimator.formatCount(fileTokens);
+        document.getElementById('td-history').textContent = TokenEstimator.formatCount(historyTokens);
+        document.getElementById('td-reserved').textContent = TokenEstimator.formatCount(reservedTokens);
+        document.getElementById('td-total').textContent =
+            `${TokenEstimator.formatCount(totalNeeded)} / ${TokenEstimator.formatCount(contextWindow)}`;
+    }
+
+    bindTokenMeter() {
+        // Toggle details on click
+        const meter = document.querySelector('.token-meter');
+        const details = document.getElementById('token-details');
+        meter.addEventListener('click', (e) => {
+            if (e.target.closest('.btn-analyze')) return;
+            details.style.display = details.style.display === 'none' ? 'block' : 'none';
+        });
+
+        // Update token meter when action changes
+        // (already triggered by updateCodeStats on code input)
+        this.updateTokenMeter();
     }
 
     renderActionButtons() {
@@ -885,6 +1075,7 @@ class Application {
                 btn.classList.add('active');
                 this.state.selectedAction = btn.dataset.actionId;
                 this.updateAnalyzeButton();
+                this.updateTokenMeter();
             });
         });
     }
@@ -897,6 +1088,7 @@ class Application {
             if (firstBtn) firstBtn.classList.add('active');
         }
         this.updateAnalyzeButton();
+        this.updateTokenMeter();
     }
 
     /* ------ Chat ------ */
@@ -917,9 +1109,12 @@ class Application {
         div.className = `msg msg-${msg.role}`;
 
         const avatarText = msg.role === 'user' ? 'Вы' : 'AI';
-        const name = msg.role === 'user' ? 'Вы' : 'CodeSentinel AI';
+        const name = msg.role === 'user' ? 'Вы' : 'AI сканер';
 
         const metaHtml = msg.meta ? `<span class="msg-meta">${msg.meta}</span>` : '';
+        const copyBtn = msg.role === 'assistant'
+            ? `<button class="btn-copy-msg" title="Скопировать ответ"><svg class="icon"><use href="#i-copy"/></svg></button>`
+            : '';
 
         div.innerHTML = `
             <div class="msg-avatar">${avatarText}</div>
@@ -928,10 +1123,13 @@ class Application {
                     <span class="msg-name">${name}</span>
                     <span class="msg-time">${msg.time}</span>
                     ${metaHtml}
+                    ${copyBtn}
                 </div>
                 <div class="msg-content">${msg.role === 'assistant' ? MarkdownRenderer.render(msg.content) : MarkdownRenderer.escapeHtml(msg.content)}</div>
             </div>
         `;
+
+        this.bindMsgCopyBtn(div);
 
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
@@ -951,23 +1149,120 @@ class Application {
             <div class="msg-avatar">AI</div>
             <div class="msg-body">
                 <div class="msg-header">
-                    <span class="msg-name">CodeSentinel AI</span>
+                    <span class="msg-name">AI сканер</span>
                     <span class="msg-time">${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+                    <span class="msg-model-badge-area"></span>
+                    <button class="btn-copy-msg" title="Скопировать ответ"><svg class="icon"><use href="#i-copy"/></svg></button>
+                </div>
+                <div class="msg-reasoning" style="display:none">
+                    <div class="reasoning-header">
+                        <svg class="icon"><use href="#i-brain"/></svg>
+                        <span class="reasoning-label">Рассуждает...</span>
+                        <span class="reasoning-toggle">Показать</span>
+                    </div>
+                    <div class="reasoning-content" style="display:none"></div>
                 </div>
                 <div class="msg-content"><div class="typing-indicator"><span></span><span></span><span></span></div></div>
             </div>
         `;
+
+        this.bindMsgCopyBtn(div);
+        this.bindReasoningToggle(div);
 
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
         return div;
     }
 
-    updateStreamingMessage(div, fullContent) {
+    updateStreamingMessage(div, info) {
+        const { fullContent, fullReasoning } = info;
+
+        // Handle reasoning section
+        if (fullReasoning) {
+            const reasoningEl = div.querySelector('.msg-reasoning');
+            if (reasoningEl) {
+                reasoningEl.style.display = 'block';
+                const contentArea = reasoningEl.querySelector('.reasoning-content');
+                contentArea.textContent = fullReasoning;
+
+                const label = reasoningEl.querySelector('.reasoning-label');
+                if (!fullContent) {
+                    label.textContent = 'Рассуждает...';
+                    label.classList.add('active');
+                } else {
+                    const tokens = TokenEstimator.estimate(fullReasoning);
+                    label.textContent = `Рассуждения (~${TokenEstimator.formatCount(tokens)} токенов)`;
+                    label.classList.remove('active');
+                }
+            }
+        }
+
+        // Handle content
         const contentEl = div.querySelector('.msg-content');
-        contentEl.innerHTML = MarkdownRenderer.render(fullContent);
+        if (fullContent) {
+            contentEl.innerHTML = MarkdownRenderer.render(fullContent);
+        }
+
         const container = document.getElementById('chat-messages');
         container.scrollTop = container.scrollHeight;
+    }
+
+    bindMsgCopyBtn(msgDiv) {
+        const btn = msgDiv.querySelector('.btn-copy-msg');
+        if (!btn) return;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const text = msgDiv.querySelector('.msg-content').innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                btn.classList.add('copied');
+                const icon = btn.querySelector('use');
+                icon.setAttribute('href', '#i-check');
+                Toast.show('Скопировано в буфер обмена');
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    icon.setAttribute('href', '#i-copy');
+                }, 2000);
+            }).catch(() => {
+                Toast.show('Не удалось скопировать', 'warning');
+            });
+        });
+    }
+
+    bindReasoningToggle(div) {
+        const header = div.querySelector('.reasoning-header');
+        if (!header) return;
+        header.addEventListener('click', () => {
+            const content = div.querySelector('.reasoning-content');
+            const toggle = div.querySelector('.reasoning-toggle');
+            const isVisible = content.style.display !== 'none';
+            content.style.display = isVisible ? 'none' : 'block';
+            toggle.textContent = isVisible ? 'Показать' : 'Скрыть';
+        });
+    }
+
+    finalizeStreamingMessage(div, result) {
+        div.removeAttribute('id');
+
+        // Add model badge showing reasoning status
+        const badgeArea = div.querySelector('.msg-model-badge-area');
+        if (badgeArea) {
+            if (result.reasoning) {
+                const tokens = TokenEstimator.estimate(result.reasoning);
+                badgeArea.innerHTML = `<span class="msg-model-badge reasoning"><svg class="icon"><use href="#i-brain"/></svg> С рассуждениями (~${TokenEstimator.formatCount(tokens)})</span>`;
+            } else if (this.state.settings.mode === 'local') {
+                badgeArea.innerHTML = `<span class="msg-model-badge no-reasoning">Без рассуждений</span>`;
+            }
+        }
+
+        // Finalize reasoning label if reasoning was present
+        if (result.reasoning) {
+            const label = div.querySelector('.reasoning-label');
+            if (label) {
+                const tokens = TokenEstimator.estimate(result.reasoning);
+                label.textContent = `Рассуждения (~${TokenEstimator.formatCount(tokens)} токенов)`;
+                label.classList.remove('active');
+            }
+        }
     }
 
     clearChat() {
@@ -977,8 +1272,8 @@ class Application {
         container.innerHTML = `
             <div class="chat-welcome">
                 <div class="welcome-icon"><svg class="icon"><use href="#i-brain"/></svg></div>
-                <h3>CodeSentinel AI</h3>
-                <p>Выберите роль, язык и действие, затем вставьте код и нажмите "Анализировать"</p>
+                <h3>AI сканер</h3>
+                <p>Вставьте исходный код, ТЗ или функциональную спецификацию, выберите роль и действие</p>
                 <div class="welcome-hints">
                     <div class="hint-card" data-role="infosec"><svg class="icon"><use href="#i-security"/></svg><span>ИБ-аудит</span></div>
                     <div class="hint-card" data-role="consultant"><svg class="icon"><use href="#i-consultant"/></svg><span>Консалтинг</span></div>
@@ -1000,6 +1295,7 @@ class Application {
 
         document.getElementById('chat-followup').disabled = true;
         document.getElementById('btn-send-followup').disabled = true;
+        this.updateTokenMeter();
     }
 
     exportChat() {
@@ -1009,11 +1305,11 @@ class Application {
         }
 
         const lines = this.state.chatMessages.map(m => {
-            const prefix = m.role === 'user' ? '## Вы' : '## CodeSentinel AI';
+            const prefix = m.role === 'user' ? '## Вы' : '## AI сканер';
             return `${prefix} (${m.time})\n\n${m.content}`;
         });
 
-        const text = `# CodeSentinel — Результаты анализа\nДата: ${new Date().toLocaleString('ru-RU')}\n\n---\n\n${lines.join('\n\n---\n\n')}`;
+        const text = `# AI сканер — Результаты анализа\nДата: ${new Date().toLocaleString('ru-RU')}\n\n---\n\n${lines.join('\n\n---\n\n')}`;
 
         const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -1035,14 +1331,23 @@ class Application {
 
         const role = ROLES[this.state.selectedRole];
         const lang = LANGUAGES[this.state.selectedLang];
-        const meta = `${role.shortName} → ${prompt.actionName} → ${lang}`;
+        const modelName = this.state.settings.mode === 'cloud'
+            ? (this.state.settings.cloudModel || 'deepseek-chat')
+            : (this.state.settings.localModel || 'local-model');
+        const meta = `${role.shortName} → ${prompt.actionName} → ${lang} | ${modelName}`;
 
         // Add user message
         this.addChatMessage('user', code, meta);
 
+        // Build system prompt with optional instruction file
+        let systemPrompt = prompt.systemPrompt;
+        if (prompt.contextContent) {
+            systemPrompt += '\n\n--- Дополнительные инструкции ---\n' + prompt.contextContent;
+        }
+
         // Build API messages
         const messages = this.llm.buildMessages(
-            prompt.systemPrompt,
+            systemPrompt,
             code,
             this.state.selectedLang,
             this.state.attachedFileContent
@@ -1058,19 +1363,23 @@ class Application {
         try {
             this.state.abortController = new AbortController();
 
-            const fullContent = await this.llm.callLLM(
+            const result = await this.llm.callLLM(
                 messages,
-                (chunk, fullText) => this.updateStreamingMessage(streamDiv, fullText),
+                (info) => this.updateStreamingMessage(streamDiv, info),
                 this.state.abortController.signal
             );
 
+            // Finalize streaming message (add badges, toggle)
+            this.finalizeStreamingMessage(streamDiv, result);
+
             // Save to conversation history
-            this.state.conversationHistory.push({ role: 'assistant', content: fullContent });
+            this.state.conversationHistory.push({ role: 'assistant', content: result.content });
             this.state.chatMessages.push({
                 role: 'assistant',
-                content: fullContent,
+                content: result.content,
                 time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
             });
+            this.updateTokenMeter();
 
             // Save to history
             this.state.addHistoryEntry({
@@ -1090,7 +1399,7 @@ class Application {
 
         } catch (err) {
             if (err.name === 'AbortError') {
-                this.updateStreamingMessage(streamDiv, '*Генерация остановлена пользователем*');
+                this.updateStreamingMessage(streamDiv, { fullContent: '*Генерация остановлена пользователем*', fullReasoning: '' });
             } else {
                 streamDiv.remove();
                 this.addChatMessage('assistant', `**Ошибка:** ${err.message}\n\nПроверьте настройки подключения к API.`);
@@ -1118,22 +1427,26 @@ class Application {
         try {
             this.state.abortController = new AbortController();
 
-            const fullContent = await this.llm.callLLM(
+            const result = await this.llm.callLLM(
                 this.state.conversationHistory,
-                (chunk, fullText) => this.updateStreamingMessage(streamDiv, fullText),
+                (info) => this.updateStreamingMessage(streamDiv, info),
                 this.state.abortController.signal
             );
 
-            this.state.conversationHistory.push({ role: 'assistant', content: fullContent });
+            // Finalize streaming message
+            this.finalizeStreamingMessage(streamDiv, result);
+
+            this.state.conversationHistory.push({ role: 'assistant', content: result.content });
             this.state.chatMessages.push({
                 role: 'assistant',
-                content: fullContent,
+                content: result.content,
                 time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
             });
+            this.updateTokenMeter();
 
         } catch (err) {
             if (err.name === 'AbortError') {
-                this.updateStreamingMessage(streamDiv, '*Генерация остановлена*');
+                this.updateStreamingMessage(streamDiv, { fullContent: '*Генерация остановлена*', fullReasoning: '' });
             } else {
                 streamDiv.remove();
                 this.addChatMessage('assistant', `**Ошибка:** ${err.message}`);
@@ -1186,16 +1499,62 @@ class Application {
             const cloudSettings = document.getElementById('cloud-settings');
             const localSettings = document.getElementById('local-settings');
 
+            const ctxSelect = document.getElementById('setting-context-window');
             if (mode === 'cloud') {
                 cloudSettings.classList.remove('disabled');
                 localSettings.classList.add('disabled');
                 localSettings.querySelector('.label-badge').textContent = 'Отключено';
-                cloudSettings.querySelector('.label-hint')?.classList.remove('hidden');
+                // Restore cloud default context window
+                ctxSelect.value = '65536';
             } else {
                 localSettings.classList.remove('disabled');
                 cloudSettings.classList.add('disabled');
                 localSettings.querySelector('.label-badge').textContent = 'Активно';
+                // Set local default context window
+                ctxSelect.value = '8192';
             }
+            // Update context window display
+            const ctxVal = parseInt(ctxSelect.value);
+            document.getElementById('context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
+        });
+
+        // Fetch local models
+        document.getElementById('btn-fetch-models').addEventListener('click', () => {
+            this.fetchLocalModels();
+        });
+
+        // Local model dropdown -> detect reasoning type
+        document.getElementById('setting-local-model-select').addEventListener('change', (e) => {
+            this.updateLocalModelTypeIndicator(e.target.value);
+        });
+
+        // DeepSeek model radio cards
+        document.querySelectorAll('input[name="deepseek-model"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                document.querySelectorAll('.model-card').forEach(c => c.classList.remove('active'));
+                if (radio.checked) {
+                    radio.closest('.model-card').classList.add('active');
+                }
+            });
+        });
+
+        // Range sliders (temperature & max tokens) + context window
+        const tempSlider = document.getElementById('setting-temperature');
+        const tokensSlider = document.getElementById('setting-max-tokens');
+        const ctxSelect = document.getElementById('setting-context-window');
+
+        tempSlider.addEventListener('input', () => {
+            document.getElementById('temperature-value').textContent = tempSlider.value;
+        });
+
+        tokensSlider.addEventListener('input', () => {
+            document.getElementById('max-tokens-value').textContent = tokensSlider.value;
+        });
+
+        ctxSelect.addEventListener('change', () => {
+            const val = parseInt(ctxSelect.value);
+            const label = val >= 1024 ? (val / 1024) + 'K' : val;
+            document.getElementById('context-window-value').textContent = label;
         });
 
         // Toggle password visibility
@@ -1239,10 +1598,29 @@ class Application {
     renderSettingsForm() {
         const s = this.state.settings;
         document.getElementById('setting-api-key').value = s.cloudApiKey || '';
-        document.getElementById('setting-cloud-model').value = s.cloudModel || 'deepseek-chat';
         document.getElementById('setting-cloud-url').value = s.cloudUrl || 'https://api.deepseek.com';
-        document.getElementById('setting-local-url').value = s.localUrl || 'http://localhost:1234';
-        document.getElementById('setting-local-model').value = s.localModel || '';
+        document.getElementById('setting-local-url').value = s.localUrl || 'http://172.16.33.12:9997';
+
+        // DeepSeek model radio
+        const modelValue = s.cloudModel || 'deepseek-chat';
+        const radios = document.querySelectorAll('input[name="deepseek-model"]');
+        radios.forEach(r => {
+            r.checked = r.value === modelValue;
+            const card = r.closest('.model-card');
+            card.classList.toggle('active', r.checked);
+        });
+
+        // Temperature, Max Tokens & Context Window
+        const tempSlider = document.getElementById('setting-temperature');
+        const tokensSlider = document.getElementById('setting-max-tokens');
+        const ctxSelect = document.getElementById('setting-context-window');
+        tempSlider.value = s.temperature ?? 0.3;
+        tokensSlider.value = s.maxTokens ?? 4096;
+        ctxSelect.value = s.contextWindow ?? 65536;
+        document.getElementById('temperature-value').textContent = tempSlider.value;
+        document.getElementById('max-tokens-value').textContent = tokensSlider.value;
+        const ctxVal = parseInt(ctxSelect.value);
+        document.getElementById('context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
 
         // Set toggle state
         const mode = s.mode || 'cloud';
@@ -1264,11 +1642,16 @@ class Application {
 
     saveSettingsFromForm() {
         this.state.settings.cloudApiKey = document.getElementById('setting-api-key').value.trim();
-        this.state.settings.cloudModel = document.getElementById('setting-cloud-model').value.trim() || 'deepseek-chat';
+        const checkedRadio = document.querySelector('input[name="deepseek-model"]:checked');
+        this.state.settings.cloudModel = checkedRadio ? checkedRadio.value : 'deepseek-chat';
         this.state.settings.cloudUrl = document.getElementById('setting-cloud-url').value.trim() || 'https://api.deepseek.com';
-        this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim() || 'http://localhost:1234';
-        this.state.settings.localModel = document.getElementById('setting-local-model').value.trim();
+        this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim() || 'http://172.16.33.12:9997';
+        this.state.settings.localModel = document.getElementById('setting-local-model-select').value;
+        this.state.settings.temperature = parseFloat(document.getElementById('setting-temperature').value) || 0.3;
+        this.state.settings.maxTokens = parseInt(document.getElementById('setting-max-tokens').value) || 4096;
+        this.state.settings.contextWindow = parseInt(document.getElementById('setting-context-window').value) || 65536;
         this.state.saveSettings();
+        this.updateTokenMeter();
         this.updateConnectionStatus();
     }
 
@@ -1276,17 +1659,89 @@ class Application {
         this.saveSettingsFromForm();
 
         const btn = document.getElementById('btn-test-connection');
+        const result = document.getElementById('test-connection-result');
         const origHTML = btn.innerHTML;
         btn.innerHTML = '<span class="spinner"></span> Проверка...';
         btn.disabled = true;
+        result.textContent = '';
+        result.className = 'connection-result';
 
         try {
             const model = await this.llm.testConnection();
             this.updateConnectionStatus(true);
+            result.className = 'connection-result success';
+            result.textContent = `Подключено! Модель: ${model}`;
             Toast.show(`Подключение успешно! Модель: ${model}`);
         } catch (err) {
             this.updateConnectionStatus(false);
+            result.className = 'connection-result error';
+            result.textContent = `Ошибка: ${err.message}`;
             Toast.show(`Ошибка подключения: ${err.message}`, 'error', 6000);
+        } finally {
+            btn.innerHTML = origHTML;
+            btn.disabled = false;
+        }
+    }
+
+    async fetchLocalModels() {
+        // Save the current URL first
+        this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim() || 'http://172.16.33.12:9997';
+
+        const btn = document.getElementById('btn-fetch-models');
+        const origHTML = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner"></span>';
+        btn.disabled = true;
+
+        const select = document.getElementById('setting-local-model-select');
+        const hint = document.getElementById('local-model-hint');
+
+        try {
+            const models = await this.llm.fetchLocalModels();
+
+            select.innerHTML = '';
+
+            if (models.length === 0) {
+                select.innerHTML = '<option value="">Модели не найдены</option>';
+                hint.textContent = '';
+                Toast.show('Сервер доступен, но модели не найдены', 'warning');
+                return;
+            }
+
+            select.innerHTML = `<option value="">-- Выберите модель (${models.length}) --</option>`;
+            this._localModelsCache = {};
+            models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                let label = m.name;
+                if (m.contextLength) label += ` [${Math.round(m.contextLength / 1024)}K]`;
+                if (m.owned_by) label += ` (${m.owned_by})`;
+                opt.textContent = label;
+                select.appendChild(opt);
+                this._localModelsCache[m.id] = m;
+            });
+
+            hint.textContent = `(найдено: ${models.length})`;
+
+            // Auto-select if current model matches saved setting
+            const current = this.state.settings.localModel;
+            if (current) {
+                select.value = current;
+            }
+
+            // Auto-select first if only one model
+            if (models.length === 1) {
+                select.value = models[0].id;
+            }
+
+            // Show type indicator for selected model
+            this.updateLocalModelTypeIndicator(select.value);
+
+            this.updateConnectionStatus(true);
+            Toast.show(`Найдено моделей: ${models.length}`);
+        } catch (err) {
+            select.innerHTML = '<option value="">Ошибка загрузки</option>';
+            hint.textContent = '';
+            Toast.show(`Не удалось загрузить модели: ${err.message}`, 'error', 6000);
         } finally {
             btn.innerHTML = origHTML;
             btn.disabled = false;
@@ -1317,6 +1772,44 @@ class Application {
                 apiStatus.className = 'status-badge offline';
                 apiStatus.querySelector('span:last-child').textContent = 'Нет подключения';
             }
+        }
+    }
+
+    updateLocalModelTypeIndicator(modelName) {
+        const indicator = document.getElementById('local-model-type');
+        if (!indicator) return;
+
+        if (!modelName) {
+            indicator.style.display = 'none';
+            return;
+        }
+
+        const isReasoning = isLikelyReasoningModel(modelName);
+
+        // Auto-set context window from model metadata if available
+        const modelData = this._localModelsCache?.[modelName];
+        let ctxInfo = '';
+        if (modelData?.contextLength) {
+            const ctxK = Math.round(modelData.contextLength / 1024);
+            ctxInfo = ` | Контекст: ${ctxK}K`;
+            // Auto-select closest context window value
+            const ctxSelect = document.getElementById('setting-context-window');
+            const options = [...ctxSelect.options].map(o => parseInt(o.value));
+            const closest = options.reduce((prev, curr) =>
+                Math.abs(curr - modelData.contextLength) < Math.abs(prev - modelData.contextLength) ? curr : prev
+            );
+            ctxSelect.value = closest;
+            const ctxVal = parseInt(ctxSelect.value);
+            document.getElementById('context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
+        }
+
+        indicator.style.display = 'flex';
+        if (isReasoning) {
+            indicator.className = 'local-model-type type-reasoning';
+            indicator.innerHTML = `<svg class="icon"><use href="#i-brain"/></svg> Рассуждающая модель (CoT)${ctxInfo}`;
+        } else {
+            indicator.className = 'local-model-type type-standard';
+            indicator.innerHTML = `<svg class="icon"><use href="#i-chat"/></svg> Стандартная модель${ctxInfo}`;
         }
     }
 
@@ -1398,6 +1891,41 @@ class Application {
             if (e.target === e.currentTarget) this.closePromptModal();
         });
 
+        // Modal context file picker
+        document.getElementById('modal-context-file').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            if (file.size > 512 * 1024) {
+                Toast.show('Файл слишком большой. Максимум: 500 КБ', 'error');
+                e.target.value = '';
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const content = ev.target.result;
+                const sample = content.substring(0, 1000);
+                const nonPrintable = (sample.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
+                if (nonPrintable > sample.length * 0.1) {
+                    Toast.show('Файл содержит бинарные данные', 'error');
+                    return;
+                }
+                this._modalContextFile = file.name;
+                this._modalContextContent = content;
+                const sizeLabel = file.size < 1024 ? `${file.size} Б` : `${(file.size / 1024).toFixed(1)} КБ`;
+                document.getElementById('modal-context-filename').textContent = `${file.name} (${sizeLabel})`;
+                document.getElementById('modal-context-info').style.display = 'flex';
+            };
+            reader.onerror = () => Toast.show('Ошибка чтения файла', 'error');
+            reader.readAsText(file);
+        });
+
+        document.getElementById('btn-modal-context-clear').addEventListener('click', () => {
+            this._modalContextFile = '';
+            this._modalContextContent = '';
+            document.getElementById('modal-context-info').style.display = 'none';
+            document.getElementById('modal-context-file').value = '';
+        });
+
         // History modal
         document.getElementById('btn-history-modal-close').addEventListener('click', () => this.closeHistoryModal());
         document.getElementById('btn-history-modal-close2').addEventListener('click', () => this.closeHistoryModal());
@@ -1412,6 +1940,8 @@ class Application {
         this.editingPromptId = id;
         const modal = document.getElementById('modal-overlay');
         const title = document.getElementById('modal-title');
+        const fileInfo = document.getElementById('modal-context-info');
+        const fileNameEl = document.getElementById('modal-context-filename');
 
         if (id) {
             const prompt = this.state.getPromptById(id);
@@ -1420,14 +1950,25 @@ class Application {
             document.getElementById('modal-role').value = prompt.role;
             document.getElementById('modal-action').value = prompt.actionName;
             document.getElementById('modal-prompt').value = prompt.systemPrompt;
-            document.getElementById('modal-context').value = prompt.contextFile || '';
+            this._modalContextFile = prompt.contextFile || '';
+            this._modalContextContent = prompt.contextContent || '';
         } else {
             title.textContent = 'Новый промпт';
             document.getElementById('modal-role').value = 'infosec';
             document.getElementById('modal-action').value = '';
             document.getElementById('modal-prompt').value = '';
-            document.getElementById('modal-context').value = '';
+            this._modalContextFile = '';
+            this._modalContextContent = '';
         }
+
+        // Show/hide file info
+        if (this._modalContextFile) {
+            fileNameEl.textContent = this._modalContextFile;
+            fileInfo.style.display = 'flex';
+        } else {
+            fileInfo.style.display = 'none';
+        }
+        document.getElementById('modal-context-file').value = '';
 
         modal.style.display = 'flex';
     }
@@ -1435,13 +1976,14 @@ class Application {
     closePromptModal() {
         document.getElementById('modal-overlay').style.display = 'none';
         this.editingPromptId = null;
+        this._modalContextFile = '';
+        this._modalContextContent = '';
     }
 
     savePromptFromModal() {
         const role = document.getElementById('modal-role').value;
         const actionName = document.getElementById('modal-action').value.trim();
         const systemPrompt = document.getElementById('modal-prompt').value.trim();
-        const contextFile = document.getElementById('modal-context').value.trim();
 
         if (!actionName || !systemPrompt) {
             Toast.show('Заполните название действия и текст промпта', 'warning');
@@ -1454,7 +1996,8 @@ class Application {
                 prompt.role = role;
                 prompt.actionName = actionName;
                 prompt.systemPrompt = systemPrompt;
-                prompt.contextFile = contextFile;
+                prompt.contextFile = this._modalContextFile;
+                prompt.contextContent = this._modalContextContent;
             }
         } else {
             this.state.prompts.push({
@@ -1462,7 +2005,8 @@ class Application {
                 role,
                 actionName,
                 systemPrompt,
-                contextFile
+                contextFile: this._modalContextFile,
+                contextContent: this._modalContextContent
             });
         }
 
@@ -1471,6 +2015,7 @@ class Application {
         this.renderActionButtons();
         this.selectFirstAction();
         this.closePromptModal();
+        this.updateTokenMeter();
         Toast.show('Промпт сохранён');
     }
 
@@ -1571,7 +2116,10 @@ class Application {
             const div = document.createElement('div');
             div.className = `msg msg-${msg.role}`;
             const avatarText = msg.role === 'user' ? 'Вы' : 'AI';
-            const name = msg.role === 'user' ? 'Вы' : 'CodeSentinel AI';
+            const name = msg.role === 'user' ? 'Вы' : 'AI сканер';
+            const copyBtn = msg.role === 'assistant'
+                ? `<button class="btn-copy-msg" title="Скопировать ответ"><svg class="icon"><use href="#i-copy"/></svg></button>`
+                : '';
 
             div.innerHTML = `
                 <div class="msg-avatar">${avatarText}</div>
@@ -1579,10 +2127,12 @@ class Application {
                     <div class="msg-header">
                         <span class="msg-name">${name}</span>
                         <span class="msg-time">${msg.time || ''}</span>
+                        ${copyBtn}
                     </div>
                     <div class="msg-content">${msg.role === 'assistant' ? MarkdownRenderer.render(msg.content) : MarkdownRenderer.escapeHtml(msg.content)}</div>
                 </div>
             `;
+            this.bindMsgCopyBtn(div);
             container.appendChild(div);
         });
 
@@ -1620,6 +2170,74 @@ class Application {
 
         this.closeHistoryModal();
         Toast.show('Сессия восстановлена');
+    }
+
+    /* ------ Help Page ------ */
+    bindHelpPage() {
+        document.querySelectorAll('.help-toc-item[data-scroll]').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.preventDefault();
+                const targetId = item.dataset.scroll;
+                const target = document.getElementById(targetId);
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+    }
+
+    bindHelpLinks() {
+        document.querySelectorAll('.help-link-btn[data-help-target]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const sectionId = btn.dataset.helpTarget;
+                this.navigateToHelp(sectionId);
+            });
+        });
+    }
+
+    /* ------ Global Keyboard Shortcuts ------ */
+    bindGlobalKeys() {
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                // Close modals first
+                const promptModal = document.getElementById('modal-overlay');
+                if (promptModal && promptModal.style.display !== 'none' && promptModal.style.display !== '') {
+                    this.closePromptModal();
+                    return;
+                }
+                const historyModal = document.getElementById('history-modal-overlay');
+                if (historyModal && historyModal.style.display !== 'none' && historyModal.style.display !== '') {
+                    this.closeHistoryModal();
+                    return;
+                }
+                // Stop generation
+                if (this.state.isGenerating) {
+                    this.stopGeneration();
+                }
+            }
+        });
+
+        // Ctrl+Enter to analyze from code textarea
+        document.getElementById('code-input').addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                if (!document.getElementById('btn-analyze').disabled) {
+                    this.runAnalysis();
+                }
+            }
+        });
+    }
+
+    navigateToHelp(sectionId) {
+        this.navigateTo('help');
+        setTimeout(() => {
+            const target = document.getElementById(sectionId);
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }, 100);
     }
 
     /* ------ Copy Code Helper ------ */
