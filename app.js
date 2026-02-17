@@ -368,8 +368,12 @@ class AppState {
         localStorage.setItem('codesentinel_history', JSON.stringify(this.history));
     }
 
-    getPromptsForRole(role) {
-        return this.prompts.filter(p => p.role === role);
+    getPromptsForRole(role, language) {
+        return this.prompts.filter(p => {
+            if (p.role !== role) return false;
+            if (language && p.language && p.language !== language) return false;
+            return true;
+        });
     }
 
     getPromptById(id) {
@@ -393,6 +397,10 @@ class LLMService {
 
     buildMessages(systemPrompt, userCode, language, contextContent) {
         const langLabel = LANGUAGES[language] || language;
+
+        // Усиливаем системный промпт указанием языка
+        const systemWithLang = `${systemPrompt}\n\nВАЖНО: Пользователь указал язык программирования — ${langLabel}. Анализируй код именно как ${langLabel}-код. Если фактический код написан на другом языке, сообщи об этом пользователю в начале ответа, но всё равно проведи анализ.`;
+
         let userContent = `Язык программирования: ${langLabel}\n\n`;
 
         if (contextContent) {
@@ -402,7 +410,7 @@ class LLMService {
         userContent += `Код для анализа:\n\`\`\`${language}\n${userCode}\n\`\`\``;
 
         return [
-            { role: 'system', content: systemPrompt },
+            { role: 'system', content: systemWithLang },
             { role: 'user', content: userContent }
         ];
     }
@@ -492,7 +500,7 @@ class LLMService {
                     const delta = parsed.choices?.[0]?.delta;
                     if (!delta) continue;
 
-                    const reasoningDelta = delta.reasoning_content || null;
+                    const reasoningDelta = delta.reasoning_content || delta.reasoning || null;
                     const contentDelta = delta.content || null;
 
                     if (reasoningDelta) fullReasoning += reasoningDelta;
@@ -506,6 +514,15 @@ class LLMService {
         }
 
         return { content: fullContent, reasoning: fullReasoning };
+    }
+
+    static _createTimeoutSignal(ms) {
+        if (typeof AbortSignal.timeout === 'function') {
+            return AbortSignal.timeout(ms);
+        }
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), ms);
+        return controller.signal;
     }
 
     async testConnection() {
@@ -526,7 +543,7 @@ class LLMService {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(10000)
+            signal: LLMService._createTimeoutSignal(10000)
         });
 
         if (!response.ok) {
@@ -541,7 +558,7 @@ class LLMService {
         const baseUrl = (this.state.settings.localUrl || 'http://172.16.33.12:9997').replace(/\/+$/, '');
         const response = await fetch(`${baseUrl}/v1/models`, {
             method: 'GET',
-            signal: AbortSignal.timeout(10000)
+            signal: LLMService._createTimeoutSignal(10000)
         });
 
         if (!response.ok) {
@@ -589,7 +606,7 @@ class MarkdownRenderer {
         // Restore code blocks
         html = html.replace(/%%CODEBLOCK_(\d+)%%/g, (_, idx) => {
             const block = codeBlocks[+idx];
-            return `<div class="code-block-wrapper"><button class="btn-copy-code" onclick="App.copyCode(this)">Копировать</button><pre><code class="lang-${block.lang}">${block.code}</code></pre></div>`;
+            return `<div class="code-block-wrapper"><button class="btn-copy-code">Копировать</button><pre><code class="lang-${block.lang}">${block.code}</code></pre></div>`;
         });
 
         // Restore inline code
@@ -704,6 +721,7 @@ class TokenEstimator {
 class Toast {
     static show(message, type = 'success', duration = 4000) {
         const container = document.getElementById('toast-container');
+        if (!container) return;
         const iconMap = {
             success: '#i-check',
             error: '#i-warning',
@@ -758,6 +776,7 @@ class Application {
         this.selectFirstAction();
         this.bindTokenMeter();
         this.bindGlobalKeys();
+        this.bindCodeCopyDelegation();
     }
 
     /* ------ Navigation ------ */
@@ -846,6 +865,9 @@ class Application {
 
         langSelect.addEventListener('change', () => {
             this.state.selectedLang = langSelect.value;
+            this.state.selectedAction = null;
+            this.renderActionButtons();
+            this.selectFirstAction();
         });
 
         codeInput.addEventListener('input', () => {
@@ -866,10 +888,6 @@ class Application {
         });
 
         // File input
-        document.getElementById('btn-attach-label').addEventListener('click', (e) => {
-            // Label already triggers file input
-        });
-
         fileInput.addEventListener('change', () => {
             const file = fileInput.files[0];
             if (!file) return;
@@ -927,12 +945,34 @@ class Application {
         });
     }
 
-    handleFileAttach(file) {
-        const MAX_FILE_SIZE = 512 * 1024; // 500 KB
+    static _validateTextFile(file) {
+        const MAX_FILE_SIZE = 512 * 1024;
+        const ALLOWED_EXTENSIONS = ['.txt', '.md', '.markdown'];
+        const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
 
+        if (!ALLOWED_EXTENSIONS.includes(ext)) {
+            return `Неподдерживаемый формат файла (${ext}). Допустимые: .txt, .md`;
+        }
         if (file.size > MAX_FILE_SIZE) {
-            const sizeMB = (file.size / 1024 / 1024).toFixed(1);
-            Toast.show(`Файл слишком большой (${sizeMB} МБ). Максимум: 500 КБ`, 'error', 5000);
+            return `Файл слишком большой (${(file.size / 1024 / 1024).toFixed(1)} МБ). Максимум: 500 КБ`;
+        }
+        return null;
+    }
+
+    static _isBinaryContent(content) {
+        const sample = content.substring(0, 1000);
+        const nonPrintable = (sample.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
+        return nonPrintable > sample.length * 0.1;
+    }
+
+    static _formatFileSize(size) {
+        return size < 1024 ? `${size} Б` : `${(size / 1024).toFixed(1)} КБ`;
+    }
+
+    handleFileAttach(file) {
+        const error = Application._validateTextFile(file);
+        if (error) {
+            Toast.show(error, 'error', 5000);
             document.getElementById('file-input').value = '';
             return;
         }
@@ -940,11 +980,8 @@ class Application {
         const reader = new FileReader();
         reader.onload = (e) => {
             const content = e.target.result;
-            // Check if content looks like binary (too many non-printable chars)
-            const sample = content.substring(0, 1000);
-            const nonPrintable = (sample.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
-            if (nonPrintable > sample.length * 0.1) {
-                Toast.show('Файл содержит бинарные данные. Поддерживаются только текстовые форматы (.txt, .md, .json и др.)', 'error', 5000);
+            if (Application._isBinaryContent(content)) {
+                Toast.show('Файл содержит бинарные данные. Поддерживаются только текстовые форматы (.txt, .md)', 'error', 5000);
                 document.getElementById('file-input').value = '';
                 return;
             }
@@ -952,9 +989,7 @@ class Application {
             this.state.attachedFile = file.name;
             this.state.attachedFileContent = content;
             const info = document.getElementById('attached-file-info');
-            const sizeLabel = file.size < 1024
-                ? `${file.size} Б`
-                : `${(file.size / 1024).toFixed(1)} КБ`;
+            const sizeLabel = Application._formatFileSize(file.size);
             document.getElementById('attached-filename').textContent = `${file.name} (${sizeLabel})`;
             info.style.display = 'flex';
             Toast.show(`Файл "${file.name}" прикреплён (${sizeLabel})`);
@@ -1023,7 +1058,7 @@ class Application {
         }
 
         // Update bar segments
-        const pct = (v) => Math.min((v / contextWindow) * 100, 100);
+        const pct = (v) => contextWindow > 0 ? Math.min((v / contextWindow) * 100, 100) : 0;
         document.getElementById('token-bar-prompt').style.width = pct(promptTokens) + '%';
         document.getElementById('token-bar-input').style.width = pct(inputTokens) + '%';
         document.getElementById('token-bar-file').style.width = pct(fileTokens) + '%';
@@ -1060,7 +1095,7 @@ class Application {
 
     renderActionButtons() {
         const container = document.getElementById('action-buttons');
-        const prompts = this.state.getPromptsForRole(this.state.selectedRole);
+        const prompts = this.state.getPromptsForRole(this.state.selectedRole, this.state.selectedLang);
 
         container.innerHTML = prompts.map(p => `
             <button class="action-btn ${this.state.selectedAction === p.id ? 'active' : ''}"
@@ -1081,7 +1116,7 @@ class Application {
     }
 
     selectFirstAction() {
-        const prompts = this.state.getPromptsForRole(this.state.selectedRole);
+        const prompts = this.state.getPromptsForRole(this.state.selectedRole, this.state.selectedLang);
         if (prompts.length > 0) {
             this.state.selectedAction = prompts[0].id;
             const firstBtn = document.querySelector('.action-btn');
@@ -1162,7 +1197,12 @@ class Application {
                     </div>
                     <div class="reasoning-content" style="display:none"></div>
                 </div>
-                <div class="msg-content"><div class="typing-indicator"><span></span><span></span><span></span></div></div>
+                <div class="msg-content">
+                    <div class="waiting-indicator">
+                        <div class="waiting-spinner"></div>
+                        <span class="waiting-text">Отправка запроса...</span>
+                    </div>
+                </div>
             </div>
         `;
 
@@ -1171,11 +1211,46 @@ class Application {
 
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
+
+        this._startWaitingTimer(div);
+
         return div;
+    }
+
+    _startWaitingTimer(streamDiv) {
+        this._waitingStartTime = Date.now();
+        this._waitingFirstChunk = false;
+
+        this._waitingTimerId = setInterval(() => {
+            if (this._waitingFirstChunk) {
+                this._clearWaitingTimer();
+                return;
+            }
+            const elapsed = Math.floor((Date.now() - this._waitingStartTime) / 1000);
+            const textEl = streamDiv.querySelector('.waiting-text');
+            if (textEl && elapsed >= 1) {
+                textEl.textContent = `Ожидание ответа модели... (${elapsed} сек)`;
+            }
+        }, 1000);
+    }
+
+    _clearWaitingTimer() {
+        if (this._waitingTimerId) {
+            clearInterval(this._waitingTimerId);
+            this._waitingTimerId = null;
+        }
     }
 
     updateStreamingMessage(div, info) {
         const { fullContent, fullReasoning } = info;
+
+        // Clear waiting indicator on first chunk
+        if (!this._waitingFirstChunk) {
+            this._waitingFirstChunk = true;
+            this._clearWaitingTimer();
+            const waitingEl = div.querySelector('.waiting-indicator');
+            if (waitingEl) waitingEl.remove();
+        }
 
         // Handle reasoning section
         if (fullReasoning) {
@@ -1212,7 +1287,7 @@ class Application {
         if (!btn) return;
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const text = msgDiv.querySelector('.msg-content').innerText;
+            const text = msgDiv.querySelector('.msg-content')?.innerText || '';
             navigator.clipboard.writeText(text).then(() => {
                 btn.classList.add('copied');
                 const icon = btn.querySelector('use');
@@ -1250,7 +1325,12 @@ class Application {
                 const tokens = TokenEstimator.estimate(result.reasoning);
                 badgeArea.innerHTML = `<span class="msg-model-badge reasoning"><svg class="icon"><use href="#i-brain"/></svg> С рассуждениями (~${TokenEstimator.formatCount(tokens)})</span>`;
             } else if (this.state.settings.mode === 'local') {
-                badgeArea.innerHTML = `<span class="msg-model-badge no-reasoning">Без рассуждений</span>`;
+                const modelName = this.state.settings.localModel || '';
+                if (isLikelyReasoningModel(modelName)) {
+                    badgeArea.innerHTML = `<span class="msg-model-badge no-reasoning" title="Модель определена как рассуждающая, но reasoning_content не получен в ответе. Возможно, сервер не поддерживает этот формат.">Рассуждения не получены</span>`;
+                } else {
+                    badgeArea.innerHTML = `<span class="msg-model-badge no-reasoning">Без рассуждений</span>`;
+                }
             }
         }
 
@@ -1311,14 +1391,18 @@ class Application {
 
         const text = `# AI сканер — Результаты анализа\nДата: ${new Date().toLocaleString('ru-RU')}\n\n---\n\n${lines.join('\n\n---\n\n')}`;
 
-        const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `codesentinel_${Date.now()}.md`;
-        a.click();
-        URL.revokeObjectURL(url);
-        Toast.show('Чат экспортирован');
+        try {
+            const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `codesentinel_${Date.now()}.md`;
+            a.click();
+            URL.revokeObjectURL(url);
+            Toast.show('Чат экспортирован');
+        } catch (err) {
+            Toast.show('Не удалось экспортировать чат: ' + err.message, 'error');
+        }
     }
 
     /* ------ Run Analysis ------ */
@@ -1476,6 +1560,7 @@ class Application {
             btnStop.style.display = 'flex';
             input.disabled = true;
         } else {
+            this._clearWaitingTimer();
             this.updateAnalyzeButton();
             btnSend.style.display = 'flex';
             btnStop.style.display = 'none';
@@ -1833,7 +1918,7 @@ class Application {
                             </div>
                         </div>
                     </td>
-                    <td><span class="table-badge ${p.role}">${p.actionName}</span></td>
+                    <td><span class="table-badge ${p.role}">${p.actionName}</span>${p.language ? ` <span class="label-badge">${LANGUAGES[p.language] || p.language}</span>` : ''}</td>
                     <td><div class="table-prompt-text" title="${MarkdownRenderer.escapeHtml(p.systemPrompt)}">${MarkdownRenderer.escapeHtml(p.systemPrompt.substring(0, 150))}...</div></td>
                     <td>${p.contextFile
                         ? `<span class="table-file-badge"><svg class="icon"><use href="#i-attach"/></svg>${MarkdownRenderer.escapeHtml(p.contextFile)}</span>`
@@ -1888,30 +1973,34 @@ class Application {
         document.getElementById('btn-modal-save').addEventListener('click', () => this.savePromptFromModal());
 
         document.getElementById('modal-overlay').addEventListener('click', (e) => {
-            if (e.target === e.currentTarget) this.closePromptModal();
+            if (e.target === e.currentTarget) {
+                if (this._hasModalUnsavedChanges()) {
+                    if (!confirm('Есть несохранённые изменения. Закрыть без сохранения?')) return;
+                }
+                this.closePromptModal();
+            }
         });
 
         // Modal context file picker
         document.getElementById('modal-context-file').addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
-            if (file.size > 512 * 1024) {
-                Toast.show('Файл слишком большой. Максимум: 500 КБ', 'error');
+            const error = Application._validateTextFile(file);
+            if (error) {
+                Toast.show(error, 'error', 5000);
                 e.target.value = '';
                 return;
             }
             const reader = new FileReader();
             reader.onload = (ev) => {
                 const content = ev.target.result;
-                const sample = content.substring(0, 1000);
-                const nonPrintable = (sample.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
-                if (nonPrintable > sample.length * 0.1) {
+                if (Application._isBinaryContent(content)) {
                     Toast.show('Файл содержит бинарные данные', 'error');
                     return;
                 }
                 this._modalContextFile = file.name;
                 this._modalContextContent = content;
-                const sizeLabel = file.size < 1024 ? `${file.size} Б` : `${(file.size / 1024).toFixed(1)} КБ`;
+                const sizeLabel = Application._formatFileSize(file.size);
                 document.getElementById('modal-context-filename').textContent = `${file.name} (${sizeLabel})`;
                 document.getElementById('modal-context-info').style.display = 'flex';
             };
@@ -1936,6 +2025,21 @@ class Application {
         });
     }
 
+    _hasModalUnsavedChanges() {
+        const action = document.getElementById('modal-action').value.trim();
+        const prompt = document.getElementById('modal-prompt').value.trim();
+        const language = document.getElementById('modal-language').value;
+        if (this.editingPromptId) {
+            const orig = this.state.getPromptById(this.editingPromptId);
+            if (!orig) return false;
+            return orig.actionName !== action || orig.systemPrompt !== prompt
+                || orig.role !== document.getElementById('modal-role').value
+                || (orig.language || '') !== language
+                || (orig.contextFile || '') !== this._modalContextFile;
+        }
+        return !!(action || prompt || this._modalContextFile);
+    }
+
     openPromptModal(id) {
         this.editingPromptId = id;
         const modal = document.getElementById('modal-overlay');
@@ -1950,6 +2054,7 @@ class Application {
             document.getElementById('modal-role').value = prompt.role;
             document.getElementById('modal-action').value = prompt.actionName;
             document.getElementById('modal-prompt').value = prompt.systemPrompt;
+            document.getElementById('modal-language').value = prompt.language || '';
             this._modalContextFile = prompt.contextFile || '';
             this._modalContextContent = prompt.contextContent || '';
         } else {
@@ -1957,6 +2062,7 @@ class Application {
             document.getElementById('modal-role').value = 'infosec';
             document.getElementById('modal-action').value = '';
             document.getElementById('modal-prompt').value = '';
+            document.getElementById('modal-language').value = '';
             this._modalContextFile = '';
             this._modalContextContent = '';
         }
@@ -1984,6 +2090,7 @@ class Application {
         const role = document.getElementById('modal-role').value;
         const actionName = document.getElementById('modal-action').value.trim();
         const systemPrompt = document.getElementById('modal-prompt').value.trim();
+        const language = document.getElementById('modal-language').value;
 
         if (!actionName || !systemPrompt) {
             Toast.show('Заполните название действия и текст промпта', 'warning');
@@ -1996,6 +2103,7 @@ class Application {
                 prompt.role = role;
                 prompt.actionName = actionName;
                 prompt.systemPrompt = systemPrompt;
+                prompt.language = language || '';
                 prompt.contextFile = this._modalContextFile;
                 prompt.contextContent = this._modalContextContent;
             }
@@ -2005,6 +2113,7 @@ class Application {
                 role,
                 actionName,
                 systemPrompt,
+                language: language || '',
                 contextFile: this._modalContextFile,
                 contextContent: this._modalContextContent
             });
@@ -2204,6 +2313,9 @@ class Application {
                 // Close modals first
                 const promptModal = document.getElementById('modal-overlay');
                 if (promptModal && promptModal.style.display !== 'none' && promptModal.style.display !== '') {
+                    if (this._hasModalUnsavedChanges()) {
+                        if (!confirm('Есть несохранённые изменения. Закрыть без сохранения?')) return;
+                    }
                     this.closePromptModal();
                     return;
                 }
@@ -2240,7 +2352,15 @@ class Application {
         }, 100);
     }
 
-    /* ------ Copy Code Helper ------ */
+    /* ------ Copy Code Helper (event delegation) ------ */
+    bindCodeCopyDelegation() {
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.btn-copy-code');
+            if (!btn) return;
+            this.copyCode(btn);
+        });
+    }
+
     copyCode(button) {
         const pre = button.nextElementSibling;
         const code = pre?.textContent || '';

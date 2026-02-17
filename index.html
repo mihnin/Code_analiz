@@ -1174,6 +1174,16 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                     <input type="text" id="modal-action" placeholder="Например: Анализ уязвимостей">
                 </div>
                 <div class="form-group">
+                    <label for="modal-language">Язык программирования <span class="label-hint">(пусто = для всех языков)</span></label>
+                    <select id="modal-language">
+                        <option value="">Все языки</option>
+                        <option value="abap">ABAP</option>
+                        <option value="1c">1С</option>
+                        <option value="python">Python</option>
+                        <option value="javascript">JavaScript</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label for="modal-prompt">Системный промпт</label>
                     <textarea id="modal-prompt" rows="8" placeholder="Текст системного промпта..."></textarea>
                 </div>

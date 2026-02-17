@@ -1225,6 +1225,39 @@ body.sidebar-collapsed .sidebar-toggle .icon {
     30% { opacity: 1; transform: scale(1); }
 }
 
+/* Waiting indicator (before first chunk arrives) */
+.waiting-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+}
+
+.waiting-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(19, 91, 236, 0.2);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: waiting-spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+
+.waiting-text {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    animation: waiting-pulse 2s ease-in-out infinite;
+}
+
+@keyframes waiting-spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes waiting-pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
 /* Chat Input Area */
 .chat-input-area {
     display: flex;
