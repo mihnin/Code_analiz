@@ -42,6 +42,9 @@
         <symbol id="i-stop" viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h12v12H6z"/></symbol>
         <symbol id="i-help" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/></symbol>
         <symbol id="i-rocket" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2.5s-5 6-5 11.5c0 2.76 2.24 5 5 5s5-2.24 5-5c0-5.5-5-11.5-5-11.5zm0 14.5c-1.66 0-3-1.34-3-3 0-2.61 1.67-5.81 3-7.94 1.33 2.13 3 5.33 3 7.94 0 1.66-1.34 3-3 3z"/></symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></symbol>
+        <symbol id="i-headset" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3C7.03 3 3 7.03 3 12v4c0 1.1.9 2 2 2h1v-6H5v-1c0-3.87 3.13-7 7-7s7 3.13 7 7v1h-1v6h1c1.1 0 2-.9 2-2v-4c0-4.97-4.03-9-9-9z"/></symbol>
+        <symbol id="i-admin-panel" viewBox="0 0 24 24"><path fill="currentColor" d="M17 11c.34 0 .67.03 1 .08V6.27L10.5 3 3 6.27v4.91c0 4.54 3.2 8.79 7.5 9.82.55-.13 1.08-.32 1.6-.55C11.41 19.47 11 18.28 11 17c0-3.31 2.69-6 6-6zm-7 1.45l-2-2 1.41-1.41L10 10.63l3.18-3.18 1.41 1.41L10 12.45zm12 3.55l-3.5-3.5-1.41 1.41L18.09 16 16 18.09l1.41 1.41L21 16z"/></symbol>
     </svg>
 
     <!-- Sidebar -->
@@ -70,6 +73,10 @@
             <a href="#" class="nav-item" data-page="help">
                 <svg class="icon"><use href="#i-help"/></svg>
                 <span>Помощь</span>
+            </a>
+            <a href="#" class="nav-item nav-item-admin" data-page="admin">
+                <svg class="icon"><use href="#i-lock"/></svg>
+                <span>Администратор</span>
             </a>
         </nav>
 
@@ -553,6 +560,10 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                         <svg class="icon"><use href="#i-security"/></svg>
                         <span>Роли</span>
                     </a>
+                    <a href="#" class="help-toc-item" data-scroll="help-infosec-guide">
+                        <svg class="icon"><use href="#i-analysis"/></svg>
+                        <span>ИБ-анализ</span>
+                    </a>
                     <a href="#" class="help-toc-item" data-scroll="help-economics">
                         <svg class="icon"><use href="#i-rocket"/></svg>
                         <span>Эффекты</span>
@@ -675,6 +686,413 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                                             <li><strong>Анализ производительности</strong> — поиск узких мест, оценка алгоритмической сложности, рекомендации по оптимизации</li>
                                         </ul>
                                         <p class="help-role-usecase"><strong>Пример использования:</strong> Разработчик перед код-ревью вставляет свой код и получает автоматическую оценку качества и предложения по рефакторингу.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section: InfoSec Guide -->
+                <div class="help-section" id="help-infosec-guide">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-header-text">
+                                <h2>
+                                    <svg class="icon"><use href="#i-security"/></svg>
+                                    Руководство по ИБ-анализу кода
+                                </h2>
+                                <p>Пошаговая инструкция: как проверять код на уязвимости</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="help-text">
+
+                                <h3>Принцип работы: «Никому не доверяй, всё проверяй»</h3>
+                                <p>ИБ-анализ построен на принципе <strong>Zero Trust</strong>: каждая строка кода рассматривается как потенциальный вектор атаки. AI не верит комментариям разработчика — он проверяет фактический код. Каждый параметр, каждый ввод пользователя, каждый вызов API считается «заражённым» (tainted) до явной проверки.</p>
+
+                                <h3>Шаг 1. Выбор роли</h3>
+                                <p>В боковой панели нажмите <strong>«Информационная безопасность»</strong> (иконка щита). Эта роль активирует набор специализированных промптов для поиска уязвимостей.</p>
+
+                                <h3>Шаг 2. Выбор языка программирования</h3>
+                                <p>Выберите язык анализируемого кода. Это <strong>критически важный шаг</strong> — от него зависит, какие специализированные проверки будут выполнены:</p>
+
+                                <table class="help-params-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Язык</th>
+                                            <th>Специализированный промпт</th>
+                                            <th>Что проверяет дополнительно</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>Python</strong></td>
+                                            <td>ИБ-анализ Python</td>
+                                            <td>eval/exec, pickle, subprocess+shell, yaml.load, SSTI, Flask debug</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>ABAP</strong></td>
+                                            <td>ИБ-анализ ABAP</td>
+                                            <td>AUTHORITY-CHECK (4 паттерна обхода), динамические CALL, Open SQL, S_TCODE/S_DATASET</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>1С</strong></td>
+                                            <td>ИБ-анализ 1С</td>
+                                            <td>Выполнить/Вычислить, COM-объекты, привилегированный режим, внешние обработки .epf</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>JavaScript</strong></td>
+                                            <td>Общие промпты (Анализ уязвимостей)</td>
+                                            <td>eval, innerHTML, prototype pollution, SSRF, XSS, ReDoS</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+
+                                <h3>Шаг 3. Выбор действия (промпта)</h3>
+                                <p>После выбора языка в панели действий появятся кнопки. Для ИБ-анализа доступны:</p>
+
+                                <div class="help-prompt-structure">
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">1</div>
+                                        <div>
+                                            <h4>Анализ уязвимостей (универсальный)</h4>
+                                            <p>Доступен для <strong>всех языков</strong>. Многослойный анализ по OWASP Top 10, CWE/SANS Top 25 с Taint Analysis. Ищет инъекции (SQL, OS, код), захардкоженные секреты, слабую криптографию, проблемы SSL/TLS, веб-уязвимости (XSS, CSRF, SSRF), path traversal, десериализацию, утечку информации. Выдаёт оценку 1-10.</p>
+                                        </div>
+                                    </div>
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">2</div>
+                                        <div>
+                                            <h4>Аудит безопасности (универсальный)</h4>
+                                            <p>Доступен для <strong>всех языков</strong>. Комплексная проверка по 7 направлениям: аутентификация, управление секретами, защита данных, входные данные, веб-безопасность, утечка информации, обработка ошибок. Формат: compliance-отчёт со статусами ✅/⚠️/❌ и оценкой соответствия.</p>
+                                        </div>
+                                    </div>
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">3</div>
+                                        <div>
+                                            <h4>ИБ-анализ [Язык] (специализированный)</h4>
+                                            <p>Появляется <strong>только при выборе соответствующего языка</strong>. Содержит десятки языко-специфичных паттернов уязвимостей. Даёт максимально глубокий анализ для конкретного языка.</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="help-callout info">
+                                    <svg class="icon"><use href="#i-brain"/></svg>
+                                    <div>
+                                        <strong>Рекомендация:</strong> Для максимального покрытия используйте <strong>специализированный промпт</strong> (ИБ-анализ Python / ABAP / 1С). Если нужен быстрый общий обзор — используйте «Анализ уязвимостей». Для формального отчёта — «Аудит безопасности».
+                                    </div>
+                                </div>
+
+                                <h3>Шаг 4. Вставьте код и запустите</h3>
+                                <p>Вставьте код в поле ввода (или прикрепите файл через кнопку «Файл контекста»), затем нажмите <strong>Ctrl+Enter</strong> или кнопку «Анализировать».</p>
+
+                                <!-- Python Example -->
+                                <h3>Пример: анализ Python-кода</h3>
+                                <div class="help-example-card">
+                                    <h4>Настройки</h4>
+                                    <p>Роль: <strong>Информационная безопасность</strong> → Язык: <strong>Python</strong> → Действие: <strong>ИБ-анализ Python</strong></p>
+                                </div>
+                                <p><strong>Что будет проверено (12 категорий):</strong></p>
+                                <table class="help-params-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Категория</th>
+                                            <th>Что ищет</th>
+                                            <th>Пример уязвимого кода</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td>1</td>
+                                            <td><strong>SQL-инъекции</strong></td>
+                                            <td>Конкатенация, f-строки, %, .format() в SQL</td>
+                                            <td><code>f"SELECT * FROM t WHERE id='{x}'"</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>2</td>
+                                            <td><strong>Инъекции кода</strong></td>
+                                            <td>eval(), exec(), __import__()</td>
+                                            <td><code>eval(request.args.get('expr'))</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>3</td>
+                                            <td><strong>Command Injection</strong></td>
+                                            <td>subprocess с shell=True + ввод</td>
+                                            <td><code>subprocess.call(f"ping {host}", shell=True)</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>4</td>
+                                            <td><strong>Десериализация</strong></td>
+                                            <td>pickle.loads, yaml.load, jsonpickle</td>
+                                            <td><code>pickle.loads(base64.b64decode(data))</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>5</td>
+                                            <td><strong>SSTI</strong></td>
+                                            <td>render_template_string с вводом</td>
+                                            <td><code>render_template_string(f"Hi {name}")</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>6</td>
+                                            <td><strong>Path Traversal</strong></td>
+                                            <td>open() с пользовательским путём</td>
+                                            <td><code>open(f"/data/{filename}")</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>7</td>
+                                            <td><strong>Секреты в коде</strong></td>
+                                            <td>API-ключи, пароли, дефолтные значения</td>
+                                            <td><code>API_KEY = "sk_live_..."</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>8</td>
+                                            <td><strong>Криптография</strong></td>
+                                            <td>MD5/SHA1, XOR, random для токенов</td>
+                                            <td><code>hashlib.md5(password.encode())</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>9</td>
+                                            <td><strong>SSL/TLS</strong></td>
+                                            <td>CERT_NONE, verify=False</td>
+                                            <td><code>ssl._create_unverified_context()</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>10</td>
+                                            <td><strong>Веб-безопасность</strong></td>
+                                            <td>Cookies, debug, загрузка файлов, XSS</td>
+                                            <td><code>app.run(debug=True)</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>11</td>
+                                            <td><strong>Аутентификация</strong></td>
+                                            <td>Timing attack (==), слабые хеши</td>
+                                            <td><code>if password == stored_hash:</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>12</td>
+                                            <td><strong>Ресурсы</strong></td>
+                                            <td>Незакрытые соединения, нет timeout</td>
+                                            <td><code>conn = sqlite3.connect(db)</code> без with</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <p>Результат: структурированный отчёт с CWE-номерами, оценкой критичности (🔴🟠🟡🔵), примерами эксплойтов и исправленным кодом. Итоговая оценка безопасности X/10.</p>
+
+                                <!-- ABAP Example -->
+                                <h3>Пример: анализ ABAP-кода</h3>
+                                <div class="help-example-card">
+                                    <h4>Настройки</h4>
+                                    <p>Роль: <strong>Информационная безопасность</strong> → Язык: <strong>ABAP</strong> → Действие: <strong>ИБ-анализ ABAP</strong></p>
+                                </div>
+                                <p><strong>Что будет проверено (8 категорий):</strong></p>
+                                <table class="help-params-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Категория</th>
+                                            <th>Что ищет</th>
+                                            <th>Пример уязвимого кода</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td>1</td>
+                                            <td><strong>Обход авторизации</strong></td>
+                                            <td>Нет AUTHORITY-CHECK, игнорирование SY-SUBRC, DUMMY в полях, * во всех полях</td>
+                                            <td><code>AUTHORITY-CHECK...</code> без <code>IF SY-SUBRC &lt;&gt; 0</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>2</td>
+                                            <td><strong>SQL-инъекции</strong></td>
+                                            <td>Динамический Open SQL, конкатенация WHERE, Native SQL</td>
+                                            <td><code>SELECT * FROM (lv_tab) WHERE (lv_where)</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>3</td>
+                                            <td><strong>Динамические вызовы</strong></td>
+                                            <td>CALL FUNCTION/METHOD из переменной, GENERATE SUBROUTINE POOL, INSERT REPORT</td>
+                                            <td><code>CALL FUNCTION lv_func_name</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>4</td>
+                                            <td><strong>Секреты в коде</strong></td>
+                                            <td>Пароли в CONSTANTS/переменных, RFC-credentials</td>
+                                            <td><code>CONSTANTS: c_pass VALUE 'admin123'</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>5</td>
+                                            <td><strong>Работа с файлами</strong></td>
+                                            <td>OPEN DATASET без S_DATASET, path traversal</td>
+                                            <td><code>OPEN DATASET lv_user_path</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>6</td>
+                                            <td><strong>Утечка информации</strong></td>
+                                            <td>WRITE/MESSAGE с техническими деталями, дампы ST22</td>
+                                            <td><code>MESSAGE lv_sql_error TYPE 'E'</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>7</td>
+                                            <td><strong>DoS-векторы</strong></td>
+                                            <td>SELECT * без UP TO n ROWS, FOR ALL ENTRIES с пустой таблицей</td>
+                                            <td><code>SELECT * FROM big_table</code></td>
+                                        </tr>
+                                        <tr>
+                                            <td>8</td>
+                                            <td><strong>RFC-интерфейсы</strong></td>
+                                            <td>Нет S_RFC, передача данных без шифрования, BAPI без проверки</td>
+                                            <td><code>CALL FUNCTION ... DESTINATION</code> без S_RFC</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+
+                                <h4>Особое внимание: 4 паттерна обхода AUTHORITY-CHECK</h4>
+                                <table class="help-params-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Паттерн</th>
+                                            <th>Проблема</th>
+                                            <th>Последствие</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>Полное отсутствие</strong></td>
+                                            <td>SELECT/UPDATE/DELETE без AUTHORITY-CHECK</td>
+                                            <td>Любой пользователь читает/меняет данные</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Игнорирование SY-SUBRC</strong></td>
+                                            <td>AUTHORITY-CHECK есть, но нет IF SY-SUBRC &lt;&gt; 0</td>
+                                            <td>Проверка бесполезна — код продолжает выполняться</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>DUMMY в полях</strong></td>
+                                            <td>ID 'ACTVT' DUMMY</td>
+                                            <td>Фиктивная проверка — пропускает любой доступ</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>* во всех полях</strong></td>
+                                            <td>FIELD '*' для каждого ID</td>
+                                            <td>Проверяется наличие любого полномочия, а не конкретного</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+
+                                <p>Результат: отчёт с привязкой к SAP-объектам авторизации (S_TCODE, S_DATASET, S_RFC, S_DEVELOP), приоритетами исправления и примерами безопасного ABAP-кода.</p>
+
+                                <!-- 1C Brief -->
+                                <h3>Для 1С: основные проверки</h3>
+                                <p>При выборе языка <strong>1С</strong> и действия <strong>«ИБ-анализ 1С»</strong> проверяются 10 категорий, включая:</p>
+                                <ul>
+                                    <li><strong>Выполнить/Вычислить</strong> — выполнение произвольного кода из строковых переменных</li>
+                                    <li><strong>COM-объекты</strong> — WScript.Shell (RCE!), FileSystemObject (доступ к файлам), ADODB.Connection (обход платформы к БД)</li>
+                                    <li><strong>Привилегированный режим</strong> — УстановитьПривилегированныйРежим(Истина) без ограничения области и без try-except</li>
+                                    <li><strong>Внешние обработки</strong> — ВнешняяОбработка.Создать() без проверки цифровой подписи</li>
+                                    <li><strong>HTTP без SSL</strong> — HTTPСоединение на порт 80, отключённая проверка сертификата</li>
+                                    <li><strong>Серверные методы</strong> — экспортные процедуры &amp;НаСервереБезКонтекста без проверки ПравоДоступа()</li>
+                                </ul>
+
+                                <!-- Recommendations -->
+                                <h3>Рекомендуемые настройки для ИБ-анализа</h3>
+                                <p>Перейдите в <strong>Настройки</strong> (боковая панель → иконка шестерёнки) и выставьте параметры перед началом анализа.</p>
+
+                                <h4>Пример настройки: DeepSeek (облако)</h4>
+                                <table class="help-params-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Параметр</th>
+                                            <th>Значение для ИБ-анализа</th>
+                                            <th>Где находится</th>
+                                            <th>Зачем именно так</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>Среда выполнения</strong></td>
+                                            <td>Облако (DeepSeek API)</td>
+                                            <td>Настройки → блок «Среда выполнения»</td>
+                                            <td>Облачные модели мощнее большинства локальных, дают лучшее качество анализа</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Модель</strong></td>
+                                            <td><code>deepseek-reasoner</code> (thinking-модель)</td>
+                                            <td>Настройки → карточки моделей → выбрать «deepseek-reasoner»</td>
+                                            <td>Рассуждающая модель (Chain-of-Thought) — «думает» перед ответом, находит скрытые уязвимости, показывает цепочку рассуждений в сворачиваемой секции. Для ИБ это критично: модель не просто перечисляет паттерны, а анализирует потоки данных</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Температура</strong></td>
+                                            <td><strong>0.1 — 0.2</strong> (ползунок влево)</td>
+                                            <td>Настройки → «Температура» → сдвинуть ползунок</td>
+                                            <td>Низкая температура = максимальная точность и детерминированность. Модель выбирает наиболее вероятные ответы, не «фантазирует». Для аудита ИБ нужны факты, а не креатив. <strong>Нюанс:</strong> deepseek-reasoner может игнорировать этот параметр (thinking-модели сами управляют «температурой мышления»), но для deepseek-chat и локальных моделей это критично</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Макс. токенов ответа</strong></td>
+                                            <td><strong>8192</strong> (оптимально) или <strong>16384</strong> (для больших файлов)</td>
+                                            <td>Настройки → «Макс. токенов» → сдвинуть ползунок вправо</td>
+                                            <td>ИБ-отчёт содержит много текста: для каждой уязвимости — уязвимый код, описание атаки, влияние, исправленный код. При 4096 (по умолчанию) отчёт может обрезаться на середине. 8192 хватает для анализа ~200-300 строк кода, 16384 — для 500+ строк</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Контекстное окно</strong></td>
+                                            <td><strong>64K</strong> (по умолчанию для облака)</td>
+                                            <td>Настройки → «Контекстное окно» → выпадающий список</td>
+                                            <td>64K — стандарт для DeepSeek. Это НЕ отправляется на сервер — только управляет цветной шкалой токенов на главном экране. Если шкала красная — ваш код слишком большой, разбейте на части</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+
+                                <h4>Итого: быстрая настройка для ИБ-анализа через DeepSeek</h4>
+                                <div class="help-prompt-structure">
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">1</div>
+                                        <div>
+                                            <h4>Настройки → Облако → deepseek-reasoner</h4>
+                                            <p>Выбрать облачный режим, карточку <code>deepseek-reasoner</code>, вставить API-ключ</p>
+                                        </div>
+                                    </div>
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">2</div>
+                                        <div>
+                                            <h4>Температура: 0.1 | Макс. токенов: 8192</h4>
+                                            <p>Ползунок температуры влево (точность), ползунок токенов вправо (полный отчёт)</p>
+                                        </div>
+                                    </div>
+                                    <div class="help-prompt-step">
+                                        <div class="help-step-num">3</div>
+                                        <div>
+                                            <h4>Анализ → ИБ → Python/ABAP/1С → ИБ-анализ [Язык]</h4>
+                                            <p>Роль «ИБ», выбрать язык, нажать специализированную кнопку, вставить код, Ctrl+Enter</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <h4>Что значит «thinking-модель» на практике?</h4>
+                                <p>Когда вы используете <code>deepseek-reasoner</code> (или другую рассуждающую модель — Qwen3, QwQ), происходит следующее:</p>
+                                <ul>
+                                    <li><strong>Фаза 1 — «Рассуждение»</strong> (5-30 секунд): модель «думает» — анализирует код, прослеживает потоки данных, перебирает возможные атаки. Вы видите пульсирующую иконку мозга и текст «Ожидание ответа модели...»</li>
+                                    <li><strong>Фаза 2 — «Ответ»</strong>: модель выдаёт финальный структурированный отчёт. Над ответом появляется сворачиваемая секция «Рассуждения» (фиолетовая) — можно раскрыть и посмотреть, как модель пришла к выводам</li>
+                                    <li><strong>Бейдж</strong>: после завершения рядом с ответом отображается «С рассуждениями (~N токенов)» — это токены, потраченные на «мышление» (они не видны в основном ответе, но расходуют бюджет контекстного окна)</li>
+                                </ul>
+                                <p>Рассуждающие модели тратят больше токенов и времени, но находят <strong>значительно больше уязвимостей</strong>, особенно неочевидных: timing-атаки, TOCTOU, сложные цепочки инъекций.</p>
+
+                                <h4>Альтернатива: deepseek-chat (быстрая модель)</h4>
+                                <p>Если вам нужен <strong>быстрый</strong> предварительный скан (1-3 секунды вместо 10-30), используйте <code>deepseek-chat</code>. Она хорошо находит очевидные проблемы (SQL-инъекции, захардкоженные пароли, eval), но может пропустить тонкие уязвимости. Для deepseek-chat температура <strong>0.1-0.2</strong> работает в полную силу.</p>
+
+                                <h4>Файл инструкций (опционально, но рекомендуется)</h4>
+                                <p>Вы можете прикрепить к промпту файл с корпоративными стандартами ИБ — он будет встроен в системный промпт и модель будет проверять код на соответствие вашим внутренним политикам. Как это сделать:</p>
+                                <ul>
+                                    <li>Перейдите в <strong>Настройки → Матрица промптов</strong></li>
+                                    <li>Найдите нужный промпт (например, «ИБ-анализ Python») и нажмите «Редактировать»</li>
+                                    <li>В модальном окне нажмите <strong>«Загрузить файл инструкций»</strong></li>
+                                    <li>Выберите .txt или .md файл с вашими стандартами (например, «Политика безопасной разработки», «Требования к ABAP-коду», «Чек-лист ИБ для 1С»)</li>
+                                    <li>Файл сохранится с промптом и будет автоматически добавляться в каждый запрос к AI</li>
+                                </ul>
+
+                                <div class="help-callout">
+                                    <svg class="icon"><use href="#i-warning"/></svg>
+                                    <div>
+                                        <strong>Важно:</strong> AI-анализ — это первая линия проверки, а не замена ручного аудита. Используйте результаты как чек-лист для более глубокого анализа. Критичные уязвимости (🔴 Critical) всегда верифицируйте вручную. Рассуждающие модели (deepseek-reasoner) дают значительно более глубокий анализ, но стоят ~4x дороже по токенам.
                                     </div>
                                 </div>
                             </div>
@@ -1085,52 +1503,59 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                                     <tbody>
                                         <tr>
                                             <td>Анализ уязвимостей</td>
-                                            <td>рассуждающая</td>
+                                            <td>deepseek-reasoner</td>
                                             <td>0.1</td>
-                                            <td>4096</td>
-                                            <td>по модели</td>
+                                            <td>8192</td>
+                                            <td>64K</td>
                                         </tr>
                                         <tr>
                                             <td>Аудит безопасности</td>
-                                            <td>рассуждающая</td>
-                                            <td>0.2</td>
+                                            <td>deepseek-reasoner</td>
+                                            <td>0.1</td>
                                             <td>8192</td>
-                                            <td>по модели</td>
+                                            <td>64K</td>
+                                        </tr>
+                                        <tr>
+                                            <td>ИБ-анализ Python / ABAP / 1С</td>
+                                            <td>deepseek-reasoner</td>
+                                            <td>0.1</td>
+                                            <td>8192–16384</td>
+                                            <td>64K</td>
                                         </tr>
                                         <tr>
                                             <td>Объяснить логику</td>
-                                            <td>стандартная</td>
+                                            <td>deepseek-chat</td>
                                             <td>0.3</td>
                                             <td>4096</td>
-                                            <td>по модели</td>
+                                            <td>64K</td>
                                         </tr>
                                         <tr>
                                             <td>ТЗ на доработку / с нуля</td>
-                                            <td>стандартная</td>
+                                            <td>deepseek-chat</td>
                                             <td>0.4</td>
                                             <td>8192</td>
-                                            <td>по модели</td>
+                                            <td>64K</td>
                                         </tr>
                                         <tr>
                                             <td>Рефакторинг</td>
-                                            <td>рассуждающая</td>
+                                            <td>deepseek-reasoner</td>
                                             <td>0.2</td>
                                             <td>8192</td>
-                                            <td>по модели</td>
+                                            <td>64K</td>
                                         </tr>
                                         <tr>
                                             <td>Оценка качества</td>
-                                            <td>стандартная</td>
+                                            <td>deepseek-chat</td>
                                             <td>0.2</td>
                                             <td>4096</td>
-                                            <td>по модели</td>
+                                            <td>64K</td>
                                         </tr>
                                         <tr>
                                             <td>Анализ производительности</td>
-                                            <td>рассуждающая</td>
+                                            <td>deepseek-reasoner</td>
                                             <td>0.2</td>
                                             <td>4096</td>
-                                            <td>по модели</td>
+                                            <td>64K</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -1149,6 +1574,189 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
 
             </div>
         </section>
+
+        <!-- ==================== ADMIN PAGE ==================== -->
+        <section id="page-admin" class="page">
+            <header class="page-header">
+                <div class="page-header-text">
+                    <h1><svg class="icon"><use href="#i-lock"/></svg> Администратор</h1>
+                    <p>Настройки AI-ассистента первой линии поддержки пользователей УПФЭ</p>
+                </div>
+                <div class="page-header-actions">
+                    <button id="admin-btn-save" class="btn-primary">
+                        <svg class="icon"><use href="#i-save"/></svg>
+                        <span>Сохранить настройки</span>
+                    </button>
+                </div>
+            </header>
+
+            <div class="settings-content">
+                <!-- API Configuration for Support Chat -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-header-text">
+                            <h2><svg class="icon"><use href="#i-headset"/></svg> Подключение LLM для чата поддержки</h2>
+                            <p>Настройки AI-модели, которая отвечает пользователям в чате поддержки 24/7.</p>
+                        </div>
+                        <div id="admin-api-status" class="status-badge offline">
+                            <span class="status-dot"></span>
+                            <span>Нет подключения</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="env-toggle-row">
+                            <div class="env-toggle-info">
+                                <div class="env-toggle-icon"><svg class="icon"><use href="#i-server"/></svg></div>
+                                <div>
+                                    <h3>Среда выполнения</h3>
+                                    <p>Облачный API (DeepSeek) или локальная модель для чата поддержки</p>
+                                </div>
+                            </div>
+                            <div class="toggle-buttons" id="admin-env-toggle">
+                                <button class="toggle-btn active" data-mode="cloud">Облачный API</button>
+                                <button class="toggle-btn" data-mode="local">Локальная модель</button>
+                            </div>
+                        </div>
+
+                        <div class="settings-grid">
+                            <div id="admin-cloud-settings" class="settings-column">
+                                <div class="form-group">
+                                    <label for="admin-api-key">API ключ DeepSeek <span class="label-hint">(для облака)</span></label>
+                                    <div class="input-with-icon">
+                                        <svg class="icon input-icon"><use href="#i-key"/></svg>
+                                        <input type="password" id="admin-api-key" placeholder="sk-..." autocomplete="off">
+                                        <button class="btn-icon-sm toggle-password" data-target="admin-api-key" title="Показать/скрыть">
+                                            <svg class="icon"><use href="#i-eye-off"/></svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Модель DeepSeek</label>
+                                    <div class="model-cards">
+                                        <label class="model-card active">
+                                            <input type="radio" name="admin-deepseek-model" value="deepseek-chat" checked>
+                                            <div class="model-card-inner">
+                                                <div class="model-card-header">
+                                                    <span class="model-card-name">deepseek-chat</span>
+                                                    <span class="model-card-badge">Быстрая</span>
+                                                </div>
+                                                <span class="model-card-desc">Стандартная модель. Быстрые ответы на вопросы пользователей.</span>
+                                            </div>
+                                        </label>
+                                        <label class="model-card">
+                                            <input type="radio" name="admin-deepseek-model" value="deepseek-reasoner">
+                                            <div class="model-card-inner">
+                                                <div class="model-card-header">
+                                                    <span class="model-card-name">deepseek-reasoner</span>
+                                                    <span class="model-card-badge reasoning">Рассуждающая</span>
+                                                </div>
+                                                <span class="model-card-desc">Модель с CoT. Более детальные и глубокие ответы.</span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="admin-cloud-url">Base URL</label>
+                                    <div class="input-with-icon">
+                                        <svg class="icon input-icon"><use href="#i-cloud"/></svg>
+                                        <input type="text" id="admin-cloud-url" placeholder="https://api.deepseek.com" value="https://api.deepseek.com">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div id="admin-local-settings" class="settings-column disabled">
+                                <div class="form-group">
+                                    <label for="admin-local-url">Адрес локальной модели <span class="label-badge" id="admin-local-badge">Отключено</span></label>
+                                    <div class="input-with-icon">
+                                        <svg class="icon input-icon"><use href="#i-lan"/></svg>
+                                        <input type="text" id="admin-local-url" placeholder="http://172.16.33.12:9997" value="http://172.16.33.12:9997">
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Модель <span class="label-hint" id="admin-local-model-hint"></span></label>
+                                    <div class="model-select-row">
+                                        <div class="select-wrapper model-select-wrapper">
+                                            <select id="admin-local-model-select" class="model-dropdown">
+                                                <option value="">-- Нажмите "Загрузить" --</option>
+                                            </select>
+                                            <svg class="icon select-chevron"><use href="#i-chevron"/></svg>
+                                        </div>
+                                        <button id="admin-btn-fetch-models" class="btn-outline btn-sm" type="button">
+                                            <svg class="icon"><use href="#i-search"/></svg>
+                                            Загрузить список
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="generation-settings">
+                            <h3 class="generation-settings-title">
+                                <svg class="icon"><use href="#i-settings"/></svg>
+                                Параметры генерации
+                            </h3>
+                            <div class="generation-settings-grid three-col">
+                                <div class="form-group">
+                                    <label for="admin-temperature">Температура <span class="range-value" id="admin-temperature-value">0.2</span></label>
+                                    <input type="range" id="admin-temperature" min="0" max="2" step="0.1" value="0.2" class="range-slider">
+                                    <div class="range-labels"><span>0 — Точный</span><span>1 — Баланс</span><span>2 — Креатив</span></div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="admin-max-tokens">Макс. токенов ответа <span class="range-value" id="admin-max-tokens-value">768</span></label>
+                                    <input type="range" id="admin-max-tokens" min="256" max="8192" step="256" value="768" class="range-slider">
+                                    <div class="range-labels"><span>256</span><span>4096</span><span>8192</span></div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="admin-context-window">Контекстное окно <span class="range-value" id="admin-context-window-value">4K</span></label>
+                                    <select id="admin-context-window" class="model-dropdown">
+                                        <option value="4096" selected>4K</option>
+                                        <option value="8192">8K</option>
+                                        <option value="16384">16K</option>
+                                        <option value="32768">32K</option>
+                                        <option value="65536">64K</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="connection-actions">
+                            <button id="admin-btn-test-connection" class="btn-primary">
+                                <svg class="icon"><use href="#i-check"/></svg>
+                                Проверить подключение
+                            </button>
+                            <span id="admin-test-connection-result" class="connection-result"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Prompt for Support Chat -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-header-text">
+                            <h2><svg class="icon"><use href="#i-brain"/></svg> Системный промпт чата поддержки</h2>
+                            <p>Инструкция для AI-ассистента. Определяет знания, стиль общения и поведение бота первой линии УПФЭ.</p>
+                        </div>
+                        <div class="card-header-actions">
+                            <button id="admin-btn-reset-prompt" class="btn-outline btn-sm">
+                                <svg class="icon"><use href="#i-history"/></svg>
+                                Сбросить по умолчанию
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="admin-system-prompt">Системный промпт</label>
+                            <textarea id="admin-system-prompt" class="code-textarea admin-prompt-textarea" placeholder="Системный промпт для бота поддержки..."></textarea>
+                        </div>
+                        <div class="form-group" style="margin-top:16px">
+                            <label for="admin-welcome-message">Приветственное сообщение <span class="label-hint">(первое сообщение пользователю при открытии чата)</span></label>
+                            <textarea id="admin-welcome-message" class="code-textarea" rows="3" placeholder="Текст приветствия..."></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
     </main>
 
     <!-- Modal: Edit Prompt -->
@@ -1236,6 +1844,81 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
 
     <!-- Toast Notification Container -->
     <div id="toast-container" class="toast-container"></div>
+
+    <!-- Admin Auth Modal -->
+    <div id="admin-auth-overlay" class="modal-overlay" style="display:none">
+        <div class="modal admin-auth-modal">
+            <div class="modal-header">
+                <h2 class="modal-title">
+                    <svg class="icon"><use href="#i-lock"/></svg>
+                    Доступ к разделу «Администратор»
+                </h2>
+            </div>
+            <div class="modal-body">
+                <p style="color:var(--text-secondary);margin-bottom:16px">Введите пароль администратора для доступа к настройкам чата поддержки УПФЭ.</p>
+                <div class="form-group">
+                    <label for="admin-password-input">Пароль</label>
+                    <div class="input-with-icon">
+                        <svg class="icon input-icon"><use href="#i-lock"/></svg>
+                        <input type="password" id="admin-password-input" placeholder="Введите пароль..." autocomplete="off">
+                        <button class="btn-icon-sm toggle-password" data-target="admin-password-input" title="Показать/скрыть">
+                            <svg class="icon"><use href="#i-eye-off"/></svg>
+                        </button>
+                    </div>
+                    <div id="admin-auth-error" class="admin-auth-error" style="display:none">
+                        <svg class="icon"><use href="#i-warning"/></svg>
+                        Неверный пароль. Попробуйте снова.
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-ghost" id="admin-auth-cancel">Отмена</button>
+                <button class="btn-primary" id="admin-auth-submit">
+                    <svg class="icon"><use href="#i-check"/></svg>
+                    Войти
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Support Chat Widget -->
+    <div id="support-chat-widget" class="support-chat-widget">
+        <div id="support-chat-popup" class="support-chat-popup" style="display:none">
+            <div class="support-chat-header">
+                <div class="support-chat-header-info">
+                    <div class="support-chat-avatar">
+                        <svg class="icon"><use href="#i-headset"/></svg>
+                    </div>
+                    <div>
+                        <div class="support-chat-title">Поддержка УПФЭ</div>
+                        <div class="support-chat-subtitle">Первая линия • 24/7</div>
+                    </div>
+                </div>
+                <button id="support-chat-close" class="support-chat-close-btn" title="Закрыть">
+                    <svg class="icon"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div id="support-chat-messages" class="support-chat-messages">
+                <!-- Messages rendered by JS -->
+            </div>
+            <div class="support-chat-typing" id="support-chat-typing" style="display:none">
+                <div class="support-typing-dots">
+                    <span></span><span></span><span></span>
+                </div>
+                <span class="support-typing-text">Ассистент печатает...</span>
+            </div>
+            <div class="support-chat-input-area">
+                <input type="text" id="support-chat-input" class="support-chat-input" placeholder="Введите вопрос...">
+                <button id="support-chat-send" class="support-chat-send-btn" title="Отправить">
+                    <svg class="icon"><use href="#i-send"/></svg>
+                </button>
+            </div>
+        </div>
+        <button id="support-chat-toggle" class="support-chat-toggle-btn" title="Чат с поддержкой УПФЭ">
+            <svg class="icon" id="support-chat-icon"><use href="#i-headset"/></svg>
+            <span id="support-chat-unread" class="support-chat-unread" style="display:none">!</span>
+        </button>
+    </div>
 
     <script src="app.js"></script>
 </body>

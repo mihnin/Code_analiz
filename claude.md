@@ -26,7 +26,9 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
 - **`MarkdownRenderer`** — static class. Markdown→HTML with XSS protection (escape first, restore code blocks after). Supports: headers, bold/italic, tables, ordered/unordered lists, code blocks (with copy button via event delegation), blockquotes, horizontal rules.
 - **`TokenEstimator`** — static class. Cyrillic ~2 chars/token, Latin/code ~4 chars/token. Drives real-time token meter.
 - **`Toast`** — notification system with null-safe container access.
-- **`Application`** — main controller. Pages: analysis, settings, history, help. Manages streaming with reasoning support, prompt CRUD, model type indicators, keyboard shortcuts. Key utilities:
+- **`AdminManager`** — admin page controller. Password-gated (`ADMIN_PASSWORD`), manages support chat settings (API config, system prompt, generation params). Persists to `codesentinel_admin_settings`.
+- **`SupportChat`** — floating support widget (bottom-right sphere button). Uses its own LLM connection (separate from main analysis). Default system prompt knows the app internals; escalates complex questions to Мартьянов Николай.
+- **`Application`** — main controller. Pages: analysis, settings, history, help, admin. Manages streaming with reasoning support, prompt CRUD, model type indicators, keyboard shortcuts. Key utilities:
   - `_validateTextFile(file)` / `_isBinaryContent(content)` / `_formatFileSize(size)` — shared file validation (extension whitelist + binary heuristic + size limit)
   - `_hasModalUnsavedChanges()` — protects against accidental modal close with unsaved data
   - `_startWaitingTimer(div)` / `_clearWaitingTimer()` — elapsed time indicator while waiting for first LLM response chunk
@@ -56,6 +58,7 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
 
 Prompts are stored in `AppState.prompts` array. Each prompt has: `id`, `role`, `language` (optional), `actionName`, `systemPrompt`, `contextContent` (instruction file).
 
+- **Language-specific prompts**: `infosec_python` (Python), `infosec_abap` (ABAP), `infosec_1c` (1С) — deep security analysis tailored to each language's vulnerability patterns (SQL injection variants, AUTHORITY-CHECK for ABAP, Выполнить/COM-objects for 1С, eval/pickle/SSTI for Python)
 - **Language filtering**: prompts with `language` field only appear when matching language is selected; prompts without `language` appear for all languages
 - **Modal editing**: language selector in prompt modal (`#modal-language`); unsaved changes protection via `_hasModalUnsavedChanges()` on overlay click / Escape
 - **Instruction files**: `contextContent` appended to system prompt, persisted with prompt in localStorage
@@ -92,6 +95,7 @@ Token meter in code panel footer tracks context window usage in real-time:
 | `codesentinel_prompts` | User-customized prompts matrix (including contextContent, language) |
 | `codesentinel_history` | Past analysis sessions (max 50) |
 | `codesentinel_sidebar_collapsed` | Sidebar visibility state |
+| `codesentinel_admin_settings` | Admin page settings (support chat API config, system prompt) |
 
 ### Keyboard Shortcuts
 
@@ -124,3 +128,5 @@ CSS custom properties in `:root`. Key tokens:
 - `help.txt` — API documentation reference
 - `.env` — DeepSeek API key (gitignored, never commit)
 - `logo.png` — brand logo (compass)
+- `prompts/infosec_universal_vulnerability_analysis.md` — comprehensive security prompt template (570 lines, all languages)
+- `примеры плохих файлов/` — sample vulnerable Python files from InfoSec team (test reference for security prompts)

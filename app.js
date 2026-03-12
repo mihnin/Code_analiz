@@ -14,42 +14,523 @@ const DEFAULT_PROMPTS = [
         id: 'infosec_vuln',
         role: 'infosec',
         actionName: 'Анализ уязвимостей',
-        systemPrompt: `Ты — эксперт по информационной безопасности с 15-летним опытом аудита корпоративных систем. Проанализируй предоставленный код на наличие уязвимостей по методологии OWASP Top 10.
+        systemPrompt: `Ты — ведущий эксперт по информационной безопасности с 20-летним опытом аудита корпоративных систем, пентеста и secure code review. Ты мыслишь как атакующий: для каждой строки кода задаёшь вопрос — «Как злоумышленник может это эксплуатировать?».
 
-Для каждой найденной уязвимости укажи:
-1. **Тип уязвимости** (CWE ID, если применимо)
-2. **Критичность** (Critical / High / Medium / Low)
-3. **Строка/фрагмент кода** с проблемой
-4. **Описание** — почему это опасно
-5. **Рекомендация** — как исправить с примером кода
+**ПРИНЦИП: НИКОМУ НЕ ДОВЕРЯЙ, ВСЁ ПРОВЕРЯЙ (Zero Trust).**
 
-Особое внимание для языков:
-- ABAP: проверки авторизации (AUTHORITY-CHECK), SQL-инъекции через динамические запросы, захардкоженные учётные данные
-- 1С: привилегированный режим, внешние обработки, SQL-инъекции через "Выполнить"
-- Python: инъекции через eval/exec, небезопасная десериализация, SSRF
-- JavaScript: XSS, prototype pollution, небезопасные зависимости
+Применяй многоуровневый анализ:
+1. **OWASP Top 10** (2021) — основной фреймворк
+2. **CWE/SANS Top 25** — детализация типов
+3. **Taint Analysis** — отслеживай поток данных от источника (source) до приёмника (sink): все внешние данные считаются заражёнными (tainted) до явной валидации
+4. **Defense in Depth** — проверяй многослойную защиту
 
-В конце выдай общую оценку безопасности от 1 до 5 и резюме.`,
+## КАТЕГОРИИ ДЛЯ ПОИСКА
+
+### 1. ИНЪЕКЦИИ (CWE-89, CWE-78, CWE-94, CWE-95, CWE-917)
+**SQL-инъекции** — ищи ЛЮБОЕ построение SQL через конкатенацию/интерполяцию:
+- Конкатенация: \`"SELECT * FROM t WHERE id = " + val\`
+- f-строки/шаблоны: \`f"SELECT ... WHERE name = '{val}'"\`, \`\\\`SELECT ... \${val}\\\`\`
+- %-форматирование: \`"SELECT ... '%s'" % val\`
+- .format(): \`"SELECT ... '{}'".format(val)\`
+- UNION-based, blind (SLEEP/WAITFOR), stacked queries, инъекции в ORDER BY/LIKE/EXEC
+- Построение WHERE через цикл конкатенации фильтров
+
+**Инъекции команд ОС** (CWE-78):
+- \`subprocess.*(cmd, shell=True)\` / \`os.system()\` / \`os.popen()\` с пользовательскими данными
+- \`child_process.exec(userInput)\` / \`execSync(userInput)\`
+
+**Инъекции кода** (CWE-94/95):
+- \`eval()\`, \`exec()\`, \`compile()+exec()\`, \`__import__(user_input)\`
+- \`new Function(userInput)\`, \`setTimeout(string)\`, \`setInterval(string)\`
+- \`innerHTML = userInput\`, \`document.write(userInput)\`, \`outerHTML\`
+
+**Десериализация** (CWE-502):
+- \`pickle.loads()\` / \`pickle.load()\` — RCE через __reduce__
+- \`yaml.load()\` без SafeLoader — code execution
+- \`jsonpickle.decode()\`, \`marshal.loads()\`, \`shelve.open()\`
+- \`node-serialize\` + eval
+
+**SSTI** (CWE-1336):
+- \`render_template_string(user_input)\`, \`Template(user_input).render()\`
+
+**Path Traversal** (CWE-22):
+- Открытие файлов по пути из ввода без нормализации и проверки \`../\`
+
+### 2. ЗАХАРДКОЖЕННЫЕ СЕКРЕТЫ (CWE-798, CWE-259)
+- API-ключи: \`API_KEY = "sk_live_..."\`, \`"AIza..."\`, \`"ghp_..."\`, \`"AKIA..."\`
+- Пароли: \`password = "..."\`, \`DB_PASSWORD\`, \`SECRET_KEY\`
+- Токены в коде, connection strings с паролями
+- Дефолтные пароли в fallback: \`os.getenv('KEY', 'default_secret')\`
+- Приватные ключи: \`-----BEGIN RSA PRIVATE KEY-----\`
+- Секреты в конфигурационных словарях/объектах
+
+### 3. КРИПТОГРАФИЯ (CWE-327, CWE-328, CWE-916)
+- **Слабые хеши**: MD5, SHA1 для паролей; SHA256 без соли; CRC32 для безопасности; HMAC с MD5
+- **Слабое шифрование**: DES, 3DES, ECB-режим, RC4, XOR-«шифрование», статические IV
+- **Небезопасный ГПСЧ**: \`random.randint()\`/\`Math.random()\` для паролей/токенов вместо \`secrets\`/\`crypto.getRandomValues()\`
+- **SSL/TLS**: \`ssl._create_unverified_context()\`, \`check_hostname=False\`, \`CERT_NONE\`, \`verify=False\`, \`rejectUnauthorized:false\`, SSLv2/SSLv3/TLS 1.0/1.1
+
+### 4. АУТЕНТИФИКАЦИЯ И АВТОРИЗАЦИЯ (CWE-287, CWE-862)
+- Сравнение паролей через \`==\` вместо constant-time (timing attack CWE-208)
+- IDOR — доступ к объекту по ID без проверки владельца
+- Отсутствие rate-limiting / brute-force защиты
+- Хранение паролей в открытом виде или с обратимым шифрованием
+
+### 5. ВЕБ-БЕЗОПАСНОСТЬ
+- **XSS** (CWE-79): innerHTML, document.write, dangerouslySetInnerHTML, jQuery .html(), mark_safe()
+- **CSRF** (CWE-352): отсутствие CSRF-токенов в формах
+- **SSRF** (CWE-918): запросы по URL из ввода без white-list
+- **Cookies**: отсутствие Secure/HttpOnly/SameSite флагов
+- **CORS**: \`Access-Control-Allow-Origin: *\`
+
+### 6. ФАЙЛЫ И ЗАГРУЗКА (CWE-434)
+- Загрузка без проверки типа/размера/содержимого
+- Сохранение с оригинальным именем (path traversal)
+- Запись в директорию с правами исполнения
+
+### 7. УТЕЧКА ИНФОРМАЦИИ (CWE-209, CWE-532)
+- Debug-режим в продакшене (\`debug=True\`, \`app.run(debug=True)\`)
+- Stack trace пользователю
+- Логирование паролей/токенов/ПДн
+- Версии в HTTP-заголовках, .git/.env доступные через веб
+
+### 8. ЛОГИЧЕСКИЕ УЯЗВИМОСТИ
+- TOCTOU, race condition
+- Integer overflow в финансовых расчётах
+- Отсутствие idempotency (двойное списание)
+
+## ФОРМАТ ОТЧЁТА
+
+Для каждой уязвимости:
+
+### [SEVERITY] CWE-XXX: Название
+**Критичность:** 🔴 Critical / 🟠 High / 🟡 Medium / 🔵 Low
+**Расположение:** строка N / функция X
+**Уязвимый код:**
+\`\`\`
+<фрагмент>
+\`\`\`
+**Описание атаки:** Как злоумышленник эксплуатирует. Пример вредоносного ввода.
+**Влияние:** Что произойдёт (утечка данных, RCE, DoS, эскалация привилегий).
+**Исправление:**
+\`\`\`
+<исправленный код>
+\`\`\`
+
+## ИТОГОВЫЙ БЛОК
+| # | Уязвимость | CWE | Критичность | Строка |
+|---|-----------|-----|-------------|--------|
+Статистика: 🔴 Critical: N, 🟠 High: N, 🟡 Medium: N, 🔵 Low: N
+**Оценка безопасности: X/10** (10 — безопасный, 1 — критически уязвимый)
+**Топ-3 приоритета** для немедленного исправления.
+
+## ПРАВИЛА
+1. НЕ ПРОПУСКАЙ ничего — лучше false positive, чем пропущенная уязвимость
+2. Проверяй поток данных — tainted до явной санитизации
+3. Не доверяй комментариям — «TODO: add validation» это уязвимость
+4. Каждая уязвимость — с примером эксплойта
+5. Каждая рекомендация — с примером исправленного кода
+6. Автоматически определяй язык и применяй языко-специфичные проверки`,
         contextFile: ''
     },
     {
         id: 'infosec_audit',
         role: 'infosec',
         actionName: 'Аудит безопасности',
-        systemPrompt: `Ты — аудитор информационной безопасности. Проведи комплексный аудит предоставленного кода по следующим направлениям:
+        systemPrompt: `Ты — аудитор информационной безопасности с опытом compliance-проверок (PCI DSS, ISO 27001, ГОСТ Р 57580). Проведи комплексный аудит предоставленного кода.
 
-1. **Аутентификация и авторизация** — проверяются ли права доступа? Есть ли обход?
-2. **Управление данными** — как обрабатываются чувствительные данные? Логирование паролей?
-3. **Конфигурация безопасности** — захардкоженные ключи, пароли, токены
-4. **Обработка ошибок** — утечка информации через сообщения об ошибках
-5. **Криптография** — используются ли устаревшие алгоритмы?
-6. **Сетевое взаимодействие** — валидация входных данных, CORS, CSRF
+**ПРИНЦИП: НИКОМУ НЕ ДОВЕРЯЙ, ВСЁ ПРОВЕРЯЙ.**
 
-Формат отчёта:
-- Заголовок раздела
-- Найденные проблемы (если есть)
-- Рекомендации по исправлению
-- Общее заключение и compliance-статус`,
+## НАПРАВЛЕНИЯ АУДИТА
+
+### 1. Аутентификация и авторизация
+- Проверяются ли права доступа перед каждой операцией?
+- Есть ли обход авторизации (IDOR, горизонтальная/вертикальная эскалация)?
+- Используется ли constant-time сравнение паролей (hmac.compare_digest/crypto.timingSafeEqual)?
+- Пароли хешируются через bcrypt/argon2/pbkdf2 с солью?
+- Есть ли rate-limiting / защита от brute-force?
+
+### 2. Управление секретами
+- Захардкоженные ключи, пароли, токены в коде?
+- Дефолтные пароли в fallback переменных окружения?
+- Секреты в конфигурационных файлах/словарях?
+- Пароли в строках подключения / URL?
+- Секреты в логах / сообщениях об ошибках?
+
+### 3. Защита данных
+- Чувствительные данные шифруются при хранении и передаче?
+- Используются ли устаревшие алгоритмы (MD5, SHA1, DES, RC4, ECB, XOR)?
+- SSL/TLS — верификация сертификатов включена?
+- ГПСЧ — используется ли cryptographic-safe генератор для секретов?
+
+### 4. Входные данные и инъекции
+- ВСЕ SQL-запросы параметризованы? Нет ли конкатенации/интерполяции?
+- Нет ли eval()/exec()/pickle.loads()/yaml.load() с внешними данными?
+- Нет ли command injection через subprocess/os.system?
+- Файлы: проверяется тип, размер, содержимое, имя при загрузке?
+
+### 5. Веб-безопасность
+- XSS: экранируется ли вывод? Нет ли innerHTML/dangerouslySetInnerHTML?
+- CSRF: есть ли токены? Проверяется Origin/Referer?
+- SSRF: запросы по пользовательским URL без white-list?
+- Cookies: установлены Secure, HttpOnly, SameSite?
+- CORS: нет ли \`Access-Control-Allow-Origin: *\`?
+
+### 6. Утечка информации
+- Debug-режим отключён в продакшене?
+- Stack trace не возвращается пользователю?
+- Логирование не содержит паролей/токенов/ПДн?
+- HTTP-заголовки не раскрывают версии?
+
+### 7. Обработка ошибок
+- Все исключения обработаны?
+- Нет ли generic catch с утечкой информации?
+- Ресурсы (соединения, файлы) закрываются в finally/with/using?
+
+## ФОРМАТ ОТЧЁТА
+Для каждого направления:
+- **Статус**: ✅ Пройдено / ⚠️ Замечания / ❌ Не пройдено
+- **Найденные проблемы** с указанием CWE и критичности
+- **Рекомендации** по исправлению с примерами кода
+
+## ИТОГОВОЕ ЗАКЛЮЧЕНИЕ
+- Сводная таблица всех находок
+- Compliance-статус: соответствие / частичное / не соответствует
+- Общая оценка безопасности: X/10
+- Топ-3 критичных проблемы для немедленного исправления
+- Архитектурные рекомендации`,
+        contextFile: ''
+    },
+    {
+        id: 'infosec_python',
+        role: 'infosec',
+        language: 'python',
+        actionName: 'ИБ-анализ Python',
+        systemPrompt: `Ты — эксперт по безопасности Python-приложений (Flask, Django, FastAPI, скрипты). 20 лет опыта пентеста и secure code review.
+
+**ПРИНЦИП: НИКОМУ НЕ ДОВЕРЯЙ, ВСЁ ПРОВЕРЯЙ.**
+
+## PYTHON-СПЕЦИФИЧНЫЕ УЯЗВИМОСТИ ДЛЯ ПОИСКА
+
+### 1. SQL-инъекции (CWE-89) — ПРИОРИТЕТ №1
+Ищи ВСЕ паттерны построения SQL без параметризации:
+- Конкатенация: \`"SELECT * FROM t WHERE id = " + user_id\`
+- f-строки: \`f"SELECT * FROM t WHERE name = '{name}'"\`
+- %-форматирование: \`"SELECT ... '%s'" % val\` (НЕ путать с DB-API %s placeholder!)
+- .format(): \`"SELECT ... '{}'".format(val)\`
+- Любой \`cursor.execute()\` где SQL построен динамически
+- ORM raw queries: \`Model.objects.raw("SELECT..." + val)\`, \`execute(text(f"..."))\`
+- Динамические имена таблиц/полей без \`sql.Identifier()\`
+- Фильтры WHERE, собираемые в цикле через конкатенацию
+
+**Безопасно**: \`cursor.execute("SELECT ... WHERE id = ?", (val,))\` — DB-API placeholder
+
+### 2. Инъекции кода (CWE-94/95) — КРИТИЧЕСКИЕ
+- \`eval(user_input)\` — выполнение произвольного кода Python
+- \`exec(user_input)\` — то же самое
+- \`compile() + exec()\` с tainted данными
+- \`__import__(user_input)\` — динамический импорт
+- \`getattr(obj, user_input)()\` — динамический вызов метода
+
+### 3. Command Injection (CWE-78)
+- \`subprocess.*(cmd, shell=True)\` + пользовательские данные = RCE
+- \`os.system(user_input)\`, \`os.popen(user_input)\`
+- Безопасно: \`subprocess.run(["cmd", arg1, arg2])\` — список аргументов
+
+### 4. Десериализация (CWE-502)
+- \`pickle.loads(untrusted)\` / \`pickle.load(untrusted_file)\` — RCE через __reduce__
+- \`yaml.load(data)\` без \`Loader=SafeLoader\` — code execution через !!python/object
+- \`yaml.unsafe_load()\` — явно небезопасно
+- \`jsonpickle.decode(untrusted)\` — arbitrary code exec
+- \`marshal.loads()\`, \`shelve.open()\` с недоверенными данными
+
+### 5. SSTI — Server-Side Template Injection (CWE-1336)
+- \`render_template_string(f"...{user_input}...")\` — Jinja2 SSTI → RCE
+- \`Template(user_input).render()\`
+- \`jinja2.Environment().from_string(user_input)\`
+- Безопасно: \`render_template_string("{{name}}", name=user_input)\`
+
+### 6. Path Traversal (CWE-22)
+- \`open(f"/path/{user_input}")\` без нормализации
+- Нет проверки на \`../\` — чтение /etc/passwd
+- Исправление: \`os.path.realpath()\` + проверка базовой директории
+
+### 7. Захардкоженные секреты (CWE-798)
+- \`API_KEY = "sk_live_..."\`, \`DB_PASSWORD = "..."\`
+- Секреты в словарях: \`config = {"password": "..."}\`
+- Дефолтные пароли: \`os.getenv('PASS', 'password123')\`
+- Пароли в connection strings
+
+### 8. Криптография (CWE-327/328/916)
+- \`hashlib.md5()\` / \`hashlib.sha1()\` для паролей — СЛАБЫЕ
+- \`hashlib.sha256()\` без соли для паролей — rainbow tables
+- \`hmac.new(..., hashlib.md5)\` — MD5 в HMAC
+- \`random.randint()\` / \`random.choice()\` для токенов/паролей — ПРЕДСКАЗУЕМЫЙ ГПСЧ
+- XOR-«шифрование» — не является шифрованием
+
+### 9. SSL/TLS (CWE-295)
+- \`ssl._create_unverified_context()\` — MITM
+- \`check_hostname = False\` + \`verify_mode = ssl.CERT_NONE\`
+- \`requests.get(url, verify=False)\`
+
+### 10. Веб-безопасность (Flask/Django/FastAPI)
+- Cookies без Secure/HttpOnly/SameSite
+- \`app.run(debug=True)\` — Werkzeug debugger = RCE
+- Stack trace пользователю: \`traceback.format_exc()\` в ответе
+- Загрузка файлов без \`secure_filename()\`, без проверки типа/размера
+- \`Markup(user_input)\` / \`mark_safe(user_input)\` — отключение экранирования
+- CORS \`*\` + credentials, CSRF без токенов
+
+### 11. Аутентификация
+- Сравнение паролей через \`==\` — timing attack → \`hmac.compare_digest()\`
+- Пароли в plaintext / MD5 / SHA без соли → bcrypt/argon2
+- Предсказуемые токены через \`random\` → \`secrets.token_urlsafe()\`
+
+### 12. Ресурсы
+- БД-соединения без \`with\`/\`finally\`/\`close()\` — утечка ресурсов
+- Отсутствие timeout в HTTP-запросах
+- Привязка к \`0.0.0.0\` по умолчанию
+
+## ФОРМАТ ОТЧЁТА
+Для каждой уязвимости:
+### [SEVERITY] CWE-XXX: Название
+**Критичность:** 🔴 Critical / 🟠 High / 🟡 Medium / 🔵 Low
+**Уязвимый код:** \`\`\` <фрагмент> \`\`\`
+**Описание атаки:** пример вредоносного ввода
+**Влияние:** RCE / утечка / DoS / эскалация
+**Исправление:** \`\`\` <безопасный код> \`\`\`
+
+## ИТОГ: сводная таблица, статистика, оценка X/10, топ-3 приоритета`,
+        contextFile: ''
+    },
+    {
+        id: 'infosec_abap',
+        role: 'infosec',
+        language: 'abap',
+        actionName: 'ИБ-анализ ABAP',
+        systemPrompt: `Ты — эксперт по безопасности SAP ABAP систем с 20-летним опытом аудита корпоративных ERP. Специализация: SAP Security, ABAP Code Inspector, SAP Code Vulnerability Analyzer (CVA).
+
+**ПРИНЦИП: НИКОМУ НЕ ДОВЕРЯЙ, ВСЁ ПРОВЕРЯЙ.**
+
+## ABAP-СПЕЦИФИЧНЫЕ УЯЗВИМОСТИ ДЛЯ ПОИСКА
+
+### 1. ОБХОД АВТОРИЗАЦИИ — ПРИОРИТЕТ №1
+
+#### 1.1 Отсутствие AUTHORITY-CHECK (CWE-862)
+Перед КАЖДОЙ критичной операцией ОБЯЗАТЕЛЕН AUTHORITY-CHECK:
+- \`SELECT\`, \`UPDATE\`, \`DELETE\`, \`INSERT\`, \`MODIFY\` — на объекты данных
+- \`CALL TRANSACTION\` — проверка S_TCODE
+- \`OPEN DATASET\` — проверка S_DATASET
+- \`CALL FUNCTION ... DESTINATION\` — проверка S_RFC
+- \`SUBMIT\` — проверка S_PROGRAM
+- \`GENERATE SUBROUTINE POOL\` — проверка S_DEVELOP
+
+#### 1.2 Некорректный AUTHORITY-CHECK
+- **Игнорирование SY-SUBRC**: \`AUTHORITY-CHECK\` есть, но нет \`IF SY-SUBRC <> 0\` — проверка бесполезна!
+- **DUMMY в полях**: \`AUTHORITY-CHECK OBJECT 'S_TCODE' ID 'TCD' DUMMY\` — фактический обход
+- **Звёздочка во всех полях**: пропускает любой доступ
+- **AUTHORITY-CHECK далеко от операции**: проверка в начале, операция — в конце (TOCTOU)
+
+#### 1.3 Критичные объекты авторизации
+- \`S_TCODE\` — перед вызовом транзакций
+- \`S_DATASET\` — перед работой с файлами на сервере приложений
+- \`S_RFC\` — перед RFC-вызовами
+- \`S_DEVELOP\` — перед операциями разработки/генерации кода
+- \`S_TABU_DIS\` / \`S_TABU_NAM\` — перед прямым доступом к таблицам
+
+### 2. SQL-ИНЪЕКЦИИ В ABAP (CWE-89)
+
+#### 2.1 Динамический Open SQL
+- \`SELECT (lv_fields) FROM (lv_table) WHERE (lv_where)\` — динамические поля/таблица/условие
+- Конкатенация WHERE: \`CONCATENATE 'FIELD = ''' lv_input '''' INTO lv_where\`
+- Построение WHERE в цикле: \`lv_where = lv_where && | AND field = '{ lv_input }'|\`
+
+#### 2.2 Native SQL
+- \`EXEC SQL. SELECT ... WHERE col = :lv_tainted ENDEXEC.\` — если lv_tainted не проверен
+- \`cl_sql_statement->execute_query( lv_concatenated_sql )\`
+- ADBC-класс \`cl_sql_connection\` с динамическим SQL
+
+#### 2.3 Безопасные паттерны
+- Параметризованные WHERE с bind-переменными
+- \`cl_abap_dyn_prg=>check_whitelist_str()\` для валидации динамических имён
+- Escape-функции для спецсимволов в LIKE
+
+### 3. ДИНАМИЧЕСКИЕ ВЫЗОВЫ (CWE-94)
+
+#### 3.1 Динамические CALL
+- \`CALL FUNCTION lv_func_name\` — имя функции из переменной (может быть tainted)
+- \`CALL METHOD (lv_class)=>(lv_method)\` — динамический вызов
+- \`CALL TRANSACTION lv_tcode\` — tcode из ввода без AUTHORITY-CHECK
+- \`SUBMIT (lv_program)\` — имя программы из переменной
+
+#### 3.2 Генерация кода
+- \`GENERATE SUBROUTINE POOL lt_code\` — генерация кода в runtime из данных
+- \`INSERT REPORT lv_name FROM itab\` — создание программы из пользовательских данных
+- \`GENERATE DYNPRO\` — генерация экранов
+
+#### 3.3 Трансформации
+- \`CALL TRANSFORMATION\` с tainted XSLT — XSLT-инъекция
+
+### 4. ЗАХАРДКОЖЕННЫЕ СЕКРЕТЫ (CWE-798)
+- \`lv_password = 'secret'\` / \`CONSTANTS: c_pass TYPE string VALUE '...'\`
+- Захардкоженные логин/пароль для RFC-соединений
+- \`cl_http_client\` с credentials в коде
+- Пароли в destinations (SM59) параметрах в коде
+- RFC_READ_TABLE без проверки авторизации — может читать любую таблицу
+
+### 5. РАБОТА С ФАЙЛАМИ (CWE-22)
+- \`OPEN DATASET lv_path\` без AUTHORITY-CHECK S_DATASET
+- Path traversal: \`lv_path = lv_user_input\` без проверки \`..\`
+- Чтение/запись на сервер приложений без контроля
+- \`DELETE DATASET\` без авторизации
+
+### 6. УТЕЧКА ИНФОРМАЦИИ (CWE-209)
+- \`WRITE\` / \`MESSAGE\` с техническими деталями для конечного пользователя
+- \`SY-MSGV1..SY-MSGV4\` с чувствительными данными в сообщениях
+- Дамп ST22 с открытыми данными при необработанных исключениях CX_*
+- Логирование паролей через \`SY-UNAME\`/пользовательских данных
+
+### 7. ПРОИЗВОДИТЕЛЬНОСТЬ КАК ВЕКТОР DoS
+- \`SELECT *\` без \`UP TO n ROWS\` — DoS через перегрузку памяти
+- \`SELECT ... FOR ALL ENTRIES IN\` с пустой таблицей — полная выборка (баг + DoS)
+- Вложенные \`SELECT\` внутри \`LOOP\` — N+1 проблема
+- Отсутствие \`PACKAGE SIZE\` при больших объёмах
+
+### 8. ИНТЕРФЕЙСЫ И RFC
+- RFC-модули без проверки S_RFC
+- Передача чувствительных данных через RFC без шифрования
+- BAPI без проверки авторизации внутри
+- HTTP-клиент без проверки SSL-сертификата: \`cl_http_client->set_ssl_id\` без верификации
+
+## ФОРМАТ ОТЧЁТА
+Для каждой уязвимости:
+### [SEVERITY] CWE-XXX: Название
+**Критичность:** 🔴 Critical / 🟠 High / 🟡 Medium / 🔵 Low
+**Уязвимый код:** \`\`\` <фрагмент ABAP> \`\`\`
+**Описание атаки:** как эксплуатируется в SAP-контексте
+**Влияние:** утечка данных / эскалация привилегий / изменение финансовых данных / DoS
+**Исправление:** \`\`\` <безопасный ABAP-код> \`\`\`
+
+## ИТОГ: сводная таблица, статистика, оценка X/10, топ-3 приоритета, рекомендации по SAP-архитектуре`,
+        contextFile: ''
+    },
+    {
+        id: 'infosec_1c',
+        role: 'infosec',
+        language: '1c',
+        actionName: 'ИБ-анализ 1С',
+        systemPrompt: `Ты — эксперт по безопасности платформы 1С:Предприятие с 20-летним опытом аудита информационных систем на базе 1С. Специализация: безопасность 1С, анализ конфигураций, защита от внешних угроз и инсайдеров.
+
+**ПРИНЦИП: НИКОМУ НЕ ДОВЕРЯЙ, ВСЁ ПРОВЕРЯЙ.**
+
+## 1С-СПЕЦИФИЧНЫЕ УЯЗВИМОСТИ ДЛЯ ПОИСКА
+
+### 1. ВЫПОЛНЕНИЕ ПРОИЗВОЛЬНОГО КОДА — ПРИОРИТЕТ №1 (CWE-94)
+
+#### 1.1 Прямое выполнение кода
+- \`Выполнить(СтрокаКода)\` / \`Execute(CodeString)\` — **КРИТИЧЕСКАЯ** уязвимость, если СтрокаКода получена от пользователя или из внешнего источника
+- \`Вычислить(Выражение)\` / \`Eval(Expression)\` — выполнение произвольных выражений
+- Любое использование \`Выполнить\`/\`Вычислить\` без предварительной валидации содержимого
+
+#### 1.2 Внешний код
+- \`ВнешняяОбработка.Создать(ИмяФайла)\` / \`ExternalDataProcessors.Create()\` — загрузка непроверенного .epf
+- \`ВнешнийОтчет.Создать(ИмяФайла)\` / \`ExternalReports.Create()\` — загрузка непроверенного .erf
+- \`ЗагрузитьВнешнююКомпоненту()\` / \`LoadExtComponent()\` — загрузка нативного DLL
+- Подключение расширений конфигурации без проверки цифровой подписи
+
+### 2. COM-ОБЪЕКТЫ И ВНЕШНИЕ КОМПОНЕНТЫ (CWE-78)
+
+#### 2.1 Опасные COM-объекты
+- \`Новый COMОбъект("WScript.Shell")\` — выполнение команд ОС! RCE!
+- \`Новый COMОбъект("Scripting.FileSystemObject")\` — полный доступ к файловой системе
+- \`Новый COMОбъект("ADODB.Connection")\` — прямой доступ к БД в обход платформы 1С
+- \`Новый COMОбъект("MSXML2.XMLHTTP")\` — неконтролируемые HTTP-запросы
+- \`Новый COMОбъект("Shell.Application")\` — запуск приложений
+- \`Новый COMОбъект("ADODB.Stream")\` — запись произвольных файлов
+- Любой COM-объект без обёртки Попытка-Исключение и без проверки прав
+
+#### 2.2 Запуск приложений
+- \`ЗапуститьПриложение()\` / \`RunApp()\` с пользовательскими данными — command injection
+- \`КомандаСистемы()\` с конкатенацией — аналог os.system() в Python
+
+### 3. ПРИВИЛЕГИРОВАННЫЙ РЕЖИМ (CWE-269)
+
+#### 3.1 Злоупотребление привилегиями
+- \`УстановитьПривилегированныйРежим(Истина)\` / \`SetPrivilegedMode(True)\` на большом участке кода — работа без ЛЮБЫХ проверок прав
+- Привилегированный режим без последующего \`УстановитьПривилегированныйРежим(Ложь)\`
+- Привилегированный режим без Попытка-Исключение — при ошибке режим не отключится
+- Привилегированный режим для операций, не требующих повышенных прав
+- Привилегированный режим в клиентских модулях (а не серверных)
+
+#### 3.2 Паттерн безопасного использования
+\`\`\`
+УстановитьПривилегированныйРежим(Истина);
+Попытка
+    // минимально необходимая операция
+    УстановитьПривилегированныйРежим(Ложь);
+Исключение
+    УстановитьПривилегированныйРежим(Ложь);
+    ВызватьИсключение;
+КонецПопытки;
+\`\`\`
+
+### 4. ИНЪЕКЦИИ В ЗАПРОСАХ 1С (CWE-89)
+- Конкатенация в тексте запроса: \`Запрос.Текст = "ВЫБРАТЬ ... ГДЕ Имя = '" + Ввод + "'"\`
+- Динамическое построение условий ГДЕ через \`СтрШаблон()\` / \`StrTemplate()\` с пользовательскими данными
+- Подстановка имён таблиц/полей из пользовательского ввода
+- Безопасно: использовать параметры запроса \`Запрос.УстановитьПараметр("Имя", Значение)\`
+
+### 5. АВТОРИЗАЦИЯ И КОНТРОЛЬ ДОСТУПА (CWE-862)
+- Отсутствие проверки \`ПравоДоступа()\` / \`AccessRight()\` перед операциями
+- Отсутствие \`РольДоступна()\` / \`IsInRole()\` проверок
+- Серверные методы с директивой \`&НаСервереБезКонтекста\` доступные для вызова с клиента без проверки прав
+- Отсутствие валидации входных параметров экспортных процедур/функций
+- Доверие данным из \`ОбщегоНазначения.ЗначениеРеквизитаОбъекта()\` без перепроверки
+
+### 6. НЕБЕЗОПАСНЫЕ HTTP-ЗАПРОСЫ (CWE-295, CWE-918)
+- \`HTTPСоединение\` / \`HTTPConnection\` без SSL (порт 80 вместо 443)
+- \`HTTPСоединение\` с отключённой проверкой сертификата
+- Передача паролей в URL (Basic Auth в URL)
+- Отсутствие таймаутов для HTTP-соединений — DoS-вектор
+- Доверие ответу внешнего сервиса без валидации (SSRF)
+- URL из пользовательского ввода без white-list
+
+### 7. ЗАХАРДКОЖЕННЫЕ СЕКРЕТЫ (CWE-798)
+- \`Пароль = "..."\` — пароли в коде модулей
+- Захардкоженные данные для подключения к внешним системам
+- Секреты в параметрах HTTPСоединение
+- Логин/пароль для FTP/SMTP/веб-сервисов в коде
+- Ключи шифрования в коде
+
+### 8. РАБОТА С ФАЙЛАМИ (CWE-22, CWE-434)
+- Работа с файлами без проверки расширений
+- \`КопироватьФайл()\` / \`ПереместитьФайл()\` с пользовательскими путями
+- Загрузка внешних обработок (.epf/.erf) без верификации подписи
+- Чтение/запись файлов без проверки пути на \`../\` (path traversal)
+- Нет проверки размера файла при загрузке
+
+### 9. УТЕЧКА ИНФОРМАЦИИ (CWE-209)
+- \`Сообщить()\` / \`Message()\` с техническими деталями (тексты SQL-ошибок)
+- \`ЗаписьЖурналаРегистрации\` с паролями / токенами / ПДн
+- Необработанные исключения с полным стеком в интерфейсе
+- Отладочные \`Сообщить()\` оставленные в продакшн-коде
+
+### 10. ОБРАБОТКА ДАННЫХ
+- Доверие данным из внешних источников (XML, JSON, файлы) без валидации схемы
+- \`ЗначениеИзСтрокиВнутр()\` / \`ValueFromStringInternal()\` с внешними данными — десериализация
+- \`XMLЧтение\` без проверки на XXE (XML External Entity)
+- Отсутствие контроля размера обрабатываемых данных (DoS через большой файл)
+
+## ФОРМАТ ОТЧЁТА
+Для каждой уязвимости:
+### [SEVERITY] CWE-XXX: Название
+**Критичность:** 🔴 Critical / 🟠 High / 🟡 Medium / 🔵 Low
+**Уязвимый код:** \`\`\` <фрагмент 1С> \`\`\`
+**Описание атаки:** как злоумышленник (в т.ч. инсайдер) может это эксплуатировать
+**Влияние:** финансовый ущерб / утечка ПДн / полный контроль / манипуляция данными
+**Исправление:** \`\`\` <безопасный код 1С> \`\`\`
+
+## ИТОГ: сводная таблица, статистика, оценка X/10, топ-3 приоритета, рекомендации по архитектуре 1С-безопасности`,
         contextFile: ''
     },
 
@@ -2310,6 +2791,17 @@ class Application {
     bindGlobalKeys() {
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
+                // Admin auth overlay — проверяем первым
+                const adminOverlay = document.getElementById('admin-auth-overlay');
+                if (adminOverlay && adminOverlay.style.display !== 'none') {
+                    adminOverlay.style.display = 'none';
+                    const pwInput = document.getElementById('admin-password-input');
+                    if (pwInput) pwInput.value = '';
+                    const pwErr = document.getElementById('admin-auth-error');
+                    if (pwErr) pwErr.style.display = 'none';
+                    return;
+                }
+
                 // Close modals first
                 const promptModal = document.getElementById('modal-overlay');
                 if (promptModal && promptModal.style.display !== 'none' && promptModal.style.display !== '') {
@@ -2375,12 +2867,770 @@ class Application {
 }
 
 /* ============================================================
+   ADMIN CONSTANTS
+   ============================================================ */
+const ADMIN_PASSWORD = 'admin123';
+
+const DEFAULT_SUPPORT_SYSTEM_PROMPT = `Ты — виртуальный ассистент первой линии технической поддержки группы УПФЭ. Твоя задача — помочь пользователям разобраться в работе приложения "AI сканер".
+
+## О приложении "AI сканер"
+
+"AI сканер" — корпоративный AI-инструмент для анализа исходного кода, функциональных спецификаций (ФС) и технических заданий (ТЗ). Работает полностью автономно, без внешних зависимостей — достаточно открыть файл в браузере. Поддерживает работу в закрытых сетях (КСПД).
+
+## Возможности системы
+
+**Поддерживаемые языки:** ABAP, 1С, Python, JavaScript
+
+**Три роли анализа:**
+- **Информационная безопасность (ИБ)** — анализ уязвимостей по OWASP Top 10, аудит безопасности, поиск CWE-уязвимостей. Для ABAP: проверки AUTHORITY-CHECK, SQL-инъекции. Для 1С: привилегированный режим, внешние обработки.
+- **Консультант** — объяснение логики кода бизнес-пользователям, генерация ТЗ на доработку, ТЗ с нуля по ГОСТ/IEEE.
+- **Разработчик** — рефакторинг (SOLID, DRY, KISS), оценка качества кода по шкале 1-5, анализ производительности и узких мест.
+
+**Типы подключения к AI:**
+- Облачный API DeepSeek (deepseek-chat, deepseek-reasoner) — требует API-ключ
+- Локальные модели (LM Studio / Ollama / Xinference) — данные не покидают инфраструктуру
+
+## Как начать работу
+
+1. Перейти в раздел **"Анализ кода"** (первый пункт меню)
+2. Выбрать **роль** (ИБ / Консультант / Разработчик)
+3. Выбрать **язык программирования** (ABAP, 1С, Python, JavaScript)
+4. Нажать на **кнопку действия** (тип анализа)
+5. Вставить исходный код или текст ТЗ в поле
+6. Нажать **"Анализировать"** или **Ctrl+Enter**
+7. Задавать уточняющие вопросы в поле ввода внизу чата
+
+## Настройка подключения
+
+**Для облака (DeepSeek):**
+- Перейти в Настройки → указать API-ключ DeepSeek (sk-...)
+- Ключ получить на сайте deepseek.com в личном кабинете
+- Нажать "Проверить подключение"
+
+**Для локальных моделей:**
+- Указать адрес сервера (например: http://172.16.33.12:9997)
+- Нажать "Загрузить список" для автообнаружения моделей
+- Выбрать модель из списка
+
+## Экономические эффекты
+
+- Ускорение код-ревью в **5-10 раз** (часы → минуты)
+- Снижение стоимости ИБ-аудита на **70%**
+- Подготовка ТЗ в **2-3 раза** быстрее
+- Рост качества кода на **40%** за счёт регулярной обратной связи
+
+## Промпты и настройка
+
+В разделе **"Настройки" → "Матрица промптов"** можно:
+- Редактировать системные промпты для каждой роли
+- Добавлять новые действия и промпты
+- Прикреплять файлы инструкций (.txt, .md) к промптам
+
+## Файлы контекста
+
+Можно прикрепить файл (.txt, .md, до 500 КБ) как контекст к запросу — например, стандарты кодирования, нормативы безопасности или регламенты компании.
+
+## Важное
+
+Для сложных вопросов по **расширению функционала приложения**, доработке или организационным вопросам — обращаться к **Мартьянову Николаю из УПФЭ**.
+
+## Стиль общения
+
+- Всегда отвечай дружелюбно, профессионально и по существу
+- Давай конкретные пошаговые инструкции
+- Если вопрос выходит за рамки поддержки приложения — вежливо перенаправь к Мартьянову Николаю
+- Отвечай только на русском языке`;
+
+const DEFAULT_SUPPORT_WELCOME = `Добро пожаловать! 👋 Я — ассистент первой линии группы поддержки УПФЭ.
+
+Помогу разобраться с приложением **AI сканер**: как начать работу, как настроить подключение к AI-модели, какие возможности есть и какие эффекты это приносит.
+
+Чем могу помочь?`;
+
+/* ============================================================
+   ADMIN MANAGER
+   ============================================================ */
+class AdminManager {
+    constructor(app) {
+        this.app = app;
+        this.isAuthenticated = false;
+        this.settings = this._loadSettings();
+        this._localModelsCache = {};
+    }
+
+    _loadSettings() {
+        const defaults = {
+            mode: 'cloud',
+            cloudApiKey: '',
+            cloudModel: 'deepseek-chat',
+            cloudUrl: 'https://api.deepseek.com',
+            localUrl: 'http://172.16.33.12:9997',
+            localModel: '',
+            temperature: 0.2,
+            maxTokens: 768,
+            contextWindow: 4096,
+            systemPrompt: DEFAULT_SUPPORT_SYSTEM_PROMPT,
+            welcomeMessage: DEFAULT_SUPPORT_WELCOME
+        };
+        try {
+            const saved = localStorage.getItem('codesentinel_admin_settings');
+            if (saved) return Object.assign({}, defaults, JSON.parse(saved));
+        } catch (e) { /* ignore */ }
+        return defaults;
+    }
+
+    saveSettings() {
+        localStorage.setItem('codesentinel_admin_settings', JSON.stringify(this.settings));
+    }
+
+    init() {
+        this._bindPasswordModal();
+        this._bindAdminPage();
+        this._bindTogglePasswordBtns();
+    }
+
+    _bindPasswordModal() {
+        const overlay = document.getElementById('admin-auth-overlay');
+        const submitBtn = document.getElementById('admin-auth-submit');
+        const cancelBtn = document.getElementById('admin-auth-cancel');
+        const input = document.getElementById('admin-password-input');
+        const errorEl = document.getElementById('admin-auth-error');
+
+        const submit = () => {
+            const val = input.value;
+            if (val === ADMIN_PASSWORD) {
+                this.isAuthenticated = true;
+                overlay.style.display = 'none';
+                input.value = '';
+                errorEl.style.display = 'none';
+                this.app.navigateTo('admin'); // _renderForm() вызывается внутри overridden navigateTo
+            } else {
+                errorEl.style.display = 'flex';
+                input.value = '';
+                input.focus();
+            }
+        };
+
+        submitBtn.addEventListener('click', submit);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+
+        cancelBtn.addEventListener('click', () => {
+            overlay.style.display = 'none';
+            input.value = '';
+            errorEl.style.display = 'none';
+        });
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) {
+                overlay.style.display = 'none';
+                input.value = '';
+                errorEl.style.display = 'none';
+            }
+        });
+    }
+
+    showPasswordModal() {
+        const overlay = document.getElementById('admin-auth-overlay');
+        overlay.style.display = 'flex';
+        setTimeout(() => document.getElementById('admin-password-input').focus(), 50);
+    }
+
+    _renderForm() {
+        const s = this.settings;
+
+        // Mode
+        document.querySelectorAll('#admin-env-toggle .toggle-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.mode === s.mode);
+        });
+        this._applyModeUI(s.mode);
+
+        // Cloud
+        document.getElementById('admin-api-key').value = s.cloudApiKey || '';
+        document.getElementById('admin-cloud-url').value = s.cloudUrl || 'https://api.deepseek.com';
+        document.querySelectorAll('input[name="admin-deepseek-model"]').forEach(r => {
+            r.checked = r.value === (s.cloudModel || 'deepseek-chat');
+            r.closest('.model-card').classList.toggle('active', r.checked);
+        });
+
+        // Local
+        document.getElementById('admin-local-url').value = s.localUrl || 'http://172.16.33.12:9997';
+        const select = document.getElementById('admin-local-model-select');
+        if (s.localModel && select.querySelector(`option[value="${s.localModel}"]`)) {
+            select.value = s.localModel;
+        }
+
+        // Generation params
+        const tempSlider = document.getElementById('admin-temperature');
+        const tokensSlider = document.getElementById('admin-max-tokens');
+        const ctxSelect = document.getElementById('admin-context-window');
+        tempSlider.value = s.temperature ?? 0.2;
+        tokensSlider.value = s.maxTokens ?? 768;
+        ctxSelect.value = s.contextWindow ?? 4096;
+        document.getElementById('admin-temperature-value').textContent = tempSlider.value;
+        document.getElementById('admin-max-tokens-value').textContent = tokensSlider.value;
+        const ctxVal = parseInt(ctxSelect.value);
+        document.getElementById('admin-context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
+
+        // Prompts
+        document.getElementById('admin-system-prompt').value = s.systemPrompt || DEFAULT_SUPPORT_SYSTEM_PROMPT;
+        document.getElementById('admin-welcome-message').value = s.welcomeMessage || DEFAULT_SUPPORT_WELCOME;
+    }
+
+    _applyModeUI(mode) {
+        const cloudSettings = document.getElementById('admin-cloud-settings');
+        const localSettings = document.getElementById('admin-local-settings');
+        const badge = document.getElementById('admin-local-badge');
+
+        if (mode === 'cloud') {
+            cloudSettings.classList.remove('disabled');
+            localSettings.classList.add('disabled');
+            if (badge) badge.textContent = 'Отключено';
+        } else {
+            localSettings.classList.remove('disabled');
+            cloudSettings.classList.add('disabled');
+            if (badge) badge.textContent = 'Активно';
+        }
+    }
+
+    _saveFromForm() {
+        this.settings.mode = document.querySelector('#admin-env-toggle .toggle-btn.active')?.dataset.mode || 'cloud';
+        this.settings.cloudApiKey = document.getElementById('admin-api-key').value.trim();
+        this.settings.cloudUrl = document.getElementById('admin-cloud-url').value.trim() || 'https://api.deepseek.com';
+        const checkedRadio = document.querySelector('input[name="admin-deepseek-model"]:checked');
+        this.settings.cloudModel = checkedRadio ? checkedRadio.value : 'deepseek-chat';
+        this.settings.localUrl = document.getElementById('admin-local-url').value.trim() || 'http://172.16.33.12:9997';
+        this.settings.localModel = document.getElementById('admin-local-model-select').value;
+        const tempRaw = parseFloat(document.getElementById('admin-temperature').value);
+        this.settings.temperature = isNaN(tempRaw) ? 0.2 : tempRaw;
+        const tokensRaw = parseInt(document.getElementById('admin-max-tokens').value);
+        this.settings.maxTokens = isNaN(tokensRaw) ? 768 : tokensRaw;
+        const ctxRaw = parseInt(document.getElementById('admin-context-window').value);
+        this.settings.contextWindow = isNaN(ctxRaw) ? 4096 : ctxRaw;
+        this.settings.systemPrompt = document.getElementById('admin-system-prompt').value.trim() || DEFAULT_SUPPORT_SYSTEM_PROMPT;
+        this.settings.welcomeMessage = document.getElementById('admin-welcome-message').value.trim() || DEFAULT_SUPPORT_WELCOME;
+        this.saveSettings();
+    }
+
+    _bindAdminPage() {
+        // Env toggle
+        document.getElementById('admin-env-toggle').addEventListener('click', (e) => {
+            const btn = e.target.closest('.toggle-btn');
+            if (!btn) return;
+            const mode = btn.dataset.mode;
+            document.querySelectorAll('#admin-env-toggle .toggle-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            this.settings.mode = mode;
+            this._applyModeUI(mode);
+        });
+
+        // Model cards
+        document.querySelectorAll('input[name="admin-deepseek-model"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                document.querySelectorAll('.model-card').forEach(c => {
+                    if (c.querySelector('input[name="admin-deepseek-model"]')) c.classList.remove('active');
+                });
+                if (radio.checked) radio.closest('.model-card').classList.add('active');
+            });
+        });
+
+        // Range sliders
+        document.getElementById('admin-temperature').addEventListener('input', (e) => {
+            document.getElementById('admin-temperature-value').textContent = e.target.value;
+        });
+        document.getElementById('admin-max-tokens').addEventListener('input', (e) => {
+            document.getElementById('admin-max-tokens-value').textContent = e.target.value;
+        });
+        document.getElementById('admin-context-window').addEventListener('change', (e) => {
+            const val = parseInt(e.target.value);
+            document.getElementById('admin-context-window-value').textContent = val >= 1024 ? (val / 1024) + 'K' : val;
+        });
+
+        // Save
+        document.getElementById('admin-btn-save').addEventListener('click', () => {
+            this._saveFromForm();
+            Toast.show('Настройки администратора сохранены');
+        });
+
+        // Reset prompt
+        document.getElementById('admin-btn-reset-prompt').addEventListener('click', () => {
+            if (!confirm('Сбросить системный промпт к значению по умолчанию?')) return;
+            document.getElementById('admin-system-prompt').value = DEFAULT_SUPPORT_SYSTEM_PROMPT;
+            document.getElementById('admin-welcome-message').value = DEFAULT_SUPPORT_WELCOME;
+            Toast.show('Промпт сброшен к значению по умолчанию');
+        });
+
+        // Fetch local models
+        document.getElementById('admin-btn-fetch-models').addEventListener('click', () => {
+            this._fetchLocalModels();
+        });
+
+        // Test connection
+        document.getElementById('admin-btn-test-connection').addEventListener('click', () => {
+            this._testConnection();
+        });
+    }
+
+    _bindTogglePasswordBtns() {
+        // Toggle password for admin-password-input (in modal) is already handled globally
+        // Admin API key toggle is handled in the main app's toggle-password binding
+        // but only covers elements in the DOM at init time — we need to also handle admin-api-key
+        const btn = document.querySelector('.toggle-password[data-target="admin-api-key"]');
+        if (btn) {
+            btn.addEventListener('click', () => {
+                const input = document.getElementById('admin-api-key');
+                const icon = btn.querySelector('use');
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    icon.setAttribute('href', '#i-eye');
+                } else {
+                    input.type = 'password';
+                    icon.setAttribute('href', '#i-eye-off');
+                }
+            });
+        }
+        // admin-password-input toggle
+        const authToggle = document.querySelector('.toggle-password[data-target="admin-password-input"]');
+        if (authToggle) {
+            authToggle.addEventListener('click', () => {
+                const input = document.getElementById('admin-password-input');
+                const icon = authToggle.querySelector('use');
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    icon.setAttribute('href', '#i-eye');
+                } else {
+                    input.type = 'password';
+                    icon.setAttribute('href', '#i-eye-off');
+                }
+            });
+        }
+    }
+
+    _getEndpointConfig() {
+        const s = this.settings;
+        if (s.mode === 'cloud') {
+            return {
+                url: (s.cloudUrl || 'https://api.deepseek.com').replace(/\/+$/, '') + '/chat/completions',
+                apiKey: s.cloudApiKey,
+                model: s.cloudModel || 'deepseek-chat'
+            };
+        }
+        return {
+            url: (s.localUrl || 'http://172.16.33.12:9997').replace(/\/+$/, '') + '/v1/chat/completions',
+            apiKey: '',
+            model: s.localModel || 'local-model'
+        };
+    }
+
+    async _testConnection() {
+        this._saveFromForm();
+        const btn = document.getElementById('admin-btn-test-connection');
+        const result = document.getElementById('admin-test-connection-result');
+        const origHTML = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner"></span> Проверка...';
+        btn.disabled = true;
+        result.textContent = '';
+        result.className = 'connection-result';
+
+        try {
+            const config = this._getEndpointConfig();
+            const headers = { 'Content-Type': 'application/json' };
+            if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+
+            const response = await fetch(config.url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    model: config.model,
+                    messages: [{ role: 'user', content: 'Hello' }],
+                    max_tokens: 5,
+                    stream: false
+                }),
+                signal: LLMService._createTimeoutSignal(10000)
+            });
+
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            const json = await response.json();
+            const modelName = json.model || config.model;
+
+            result.className = 'connection-result success';
+            result.textContent = `Подключено! Модель: ${modelName}`;
+            Toast.show(`Подключение успешно! Модель: ${modelName}`);
+
+            // Update status badge
+            const statusBadge = document.getElementById('admin-api-status');
+            if (statusBadge) {
+                statusBadge.className = 'status-badge online';
+                statusBadge.querySelector('span:last-child').textContent = 'Подключено';
+            }
+        } catch (err) {
+            result.className = 'connection-result error';
+            result.textContent = `Ошибка: ${err.message}`;
+            Toast.show(`Ошибка подключения: ${err.message}`, 'error', 6000);
+        } finally {
+            btn.innerHTML = origHTML;
+            btn.disabled = false;
+        }
+    }
+
+    async _fetchLocalModels() {
+        this.settings.localUrl = document.getElementById('admin-local-url').value.trim() || 'http://172.16.33.12:9997';
+        const btn = document.getElementById('admin-btn-fetch-models');
+        const origHTML = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner"></span>';
+        btn.disabled = true;
+        const select = document.getElementById('admin-local-model-select');
+        const hint = document.getElementById('admin-local-model-hint');
+
+        try {
+            const baseUrl = this.settings.localUrl.replace(/\/+$/, '');
+            const response = await fetch(`${baseUrl}/v1/models`, {
+                method: 'GET',
+                signal: LLMService._createTimeoutSignal(10000)
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const json = await response.json();
+            const models = (json.data || json.models || []).map(m => ({
+                id: m.id || m.name || m.model,
+                name: m.id || m.name || m.model
+            })).filter(m => m.id);
+
+            select.innerHTML = `<option value="">-- Выберите модель (${models.length}) --</option>`;
+            models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name;
+                select.appendChild(opt);
+            });
+            hint.textContent = `(найдено: ${models.length})`;
+            if (this.settings.localModel) select.value = this.settings.localModel;
+            Toast.show(`Найдено моделей: ${models.length}`);
+        } catch (err) {
+            select.innerHTML = '<option value="">Ошибка загрузки</option>';
+            hint.textContent = '';
+            Toast.show(`Не удалось загрузить модели: ${err.message}`, 'error', 5000);
+        } finally {
+            btn.innerHTML = origHTML;
+            btn.disabled = false;
+        }
+    }
+
+    async callSupportLLM(messages, onChunk, abortSignal) {
+        const config = this._getEndpointConfig();
+        const s = this.settings;
+
+        if (s.mode === 'cloud' && !config.apiKey) {
+            throw new Error('API ключ для чата поддержки не настроен. Перейдите в раздел Администратор.');
+        }
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+
+        const response = await fetch(config.url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                model: config.model,
+                messages,
+                stream: true,
+                temperature: s.temperature,
+                max_tokens: s.maxTokens
+            }),
+            signal: abortSignal
+        });
+
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            let detail = errText;
+            try { detail = JSON.parse(errText).error?.message || errText; } catch { /**/ }
+            throw new Error(`API Error ${response.status}: ${detail || response.statusText}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullContent = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith('data:')) continue;
+                const data = trimmed.slice(5).trim();
+                if (data === '[DONE]') continue;
+                try {
+                    const parsed = JSON.parse(data);
+                    const delta = parsed.choices?.[0]?.delta;
+                    const contentDelta = delta?.content || null;
+                    if (contentDelta) {
+                        fullContent += contentDelta;
+                        onChunk(fullContent);
+                    }
+                } catch { /* skip */ }
+            }
+        }
+
+        return fullContent;
+    }
+}
+
+/* ============================================================
+   SUPPORT CHAT
+   ============================================================ */
+class SupportChat {
+    constructor(adminManager) {
+        this.admin = adminManager;
+        this.messages = []; // { role, content }
+        this.isOpen = false;
+        this.isGenerating = false;
+        this.abortController = null;
+        this._welcomeShown = false;
+        this.init();
+    }
+
+    init() {
+        const toggleBtn = document.getElementById('support-chat-toggle');
+        const closeBtn = document.getElementById('support-chat-close');
+        const sendBtn = document.getElementById('support-chat-send');
+        const input = document.getElementById('support-chat-input');
+
+        toggleBtn.addEventListener('click', () => this.toggle());
+        closeBtn.addEventListener('click', () => this.close());
+        sendBtn.addEventListener('click', () => {
+            if (this.isGenerating) {
+                this.abortController?.abort();
+            } else {
+                this.send();
+            }
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (!this.isGenerating) this.send();
+            }
+        });
+    }
+
+    toggle() {
+        if (this.isOpen) {
+            this.close();
+        } else {
+            this.open();
+        }
+    }
+
+    open() {
+        this.isOpen = true;
+        document.getElementById('support-chat-popup').style.display = 'flex';
+        document.getElementById('support-chat-unread').style.display = 'none';
+
+        if (!this._welcomeShown) {
+            this._welcomeShown = true;
+            this._showWelcome();
+        }
+
+        setTimeout(() => document.getElementById('support-chat-input').focus(), 100);
+    }
+
+    close() {
+        this.isOpen = false;
+        document.getElementById('support-chat-popup').style.display = 'none';
+    }
+
+    _showWelcome() {
+        const welcomeMsg = this.admin.settings.welcomeMessage || DEFAULT_SUPPORT_WELCOME;
+        this._appendMessage('assistant', welcomeMsg);
+        this.messages.push({ role: 'assistant', content: welcomeMsg });
+    }
+
+    _isConfigured() {
+        const s = this.admin.settings;
+        if (s.mode === 'cloud') return !!s.cloudApiKey;
+        return !!(s.localUrl && s.localModel);
+    }
+
+    _appendMessage(role, content) {
+        const container = document.getElementById('support-chat-messages');
+        const div = document.createElement('div');
+        div.className = `support-msg ${role}`;
+
+        const avatarText = role === 'user' ? 'Вы' : 'УП';
+        const bubble = document.createElement('div');
+        bubble.className = 'support-msg-bubble';
+
+        if (role === 'assistant') {
+            bubble.innerHTML = this._renderSimpleMarkdown(content);
+        } else {
+            bubble.textContent = content;
+        }
+
+        const avatar = document.createElement('div');
+        avatar.className = 'support-msg-avatar';
+        avatar.textContent = avatarText;
+
+        div.appendChild(avatar);
+        div.appendChild(bubble);
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+        return { div, bubble };
+    }
+
+    _renderSimpleMarkdown(text) {
+        if (!text) return '';
+        let html = MarkdownRenderer.escapeHtml(text);
+        // Bold
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        // Italic
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        // Inline code
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        // Unordered list items
+        html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>[\s\S]+?<\/li>\n?)+/g, '<ul>$&</ul>');
+        // Paragraphs (double newline = paragraph)
+        html = html.replace(/\n\n/g, '</p><p>');
+        html = html.replace(/\n/g, '<br>');
+        return '<p>' + html + '</p>';
+    }
+
+    async send() {
+        if (this.isGenerating) return;
+
+        const input = document.getElementById('support-chat-input');
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+
+        if (!this._isConfigured()) {
+            this._appendMessage('assistant', '⚠️ Чат поддержки не настроен. Обратитесь к администратору (Мартьянов Николай, УПФЭ) для настройки AI-подключения.');
+            return;
+        }
+
+        // Add user message to UI and history
+        this._appendMessage('user', text);
+        this.messages.push({ role: 'user', content: text });
+
+        // Trim history: не более 20 сообщений (10 пар) чтобы не переполнить context window
+        const MAX_CHAT_HISTORY = 20;
+        if (this.messages.length > MAX_CHAT_HISTORY) {
+            // Сохраняем первый assistant-msg (приветствие) + последние N-1 сообщений
+            this.messages = this.messages.slice(-MAX_CHAT_HISTORY);
+        }
+
+        // Prepare messages for API
+        const apiMessages = [
+            { role: 'system', content: this.admin.settings.systemPrompt || DEFAULT_SUPPORT_SYSTEM_PROMPT },
+            ...this.messages
+        ];
+
+        // UI: typing indicator, кнопка → стоп
+        document.getElementById('support-chat-typing').style.display = 'flex';
+        const sendBtn = document.getElementById('support-chat-send');
+        sendBtn.innerHTML = '<svg class="icon"><use href="#i-stop"/></svg>';
+        sendBtn.title = 'Остановить';
+        this.isGenerating = true;
+
+        this.abortController = new AbortController();
+        // Timeout 90 сек — если сервер завис, abortим автоматически
+        const timeoutId = setTimeout(() => this.abortController.abort(), 90000);
+
+        try {
+            const container = document.getElementById('support-chat-messages');
+            const streamDiv = document.createElement('div');
+            streamDiv.className = 'support-msg assistant';
+            const streamAvatar = document.createElement('div');
+            streamAvatar.className = 'support-msg-avatar';
+            streamAvatar.textContent = 'УП';
+            const streamBubble = document.createElement('div');
+            streamBubble.className = 'support-msg-bubble';
+            streamDiv.appendChild(streamAvatar);
+            streamDiv.appendChild(streamBubble);
+
+            let firstChunk = false;
+
+            const fullContent = await this.admin.callSupportLLM(
+                apiMessages,
+                (content) => {
+                    if (!firstChunk) {
+                        firstChunk = true;
+                        document.getElementById('support-chat-typing').style.display = 'none';
+                        container.appendChild(streamDiv);
+                    }
+                    streamBubble.innerHTML = this._renderSimpleMarkdown(content);
+                    container.scrollTop = container.scrollHeight;
+                },
+                this.abortController.signal
+            );
+
+            if (!firstChunk) {
+                document.getElementById('support-chat-typing').style.display = 'none';
+            }
+
+            this.messages.push({ role: 'assistant', content: fullContent });
+
+            // Показать бейдж если попап закрыт
+            if (!this.isOpen) {
+                document.getElementById('support-chat-unread').style.display = 'flex';
+            }
+
+        } catch (err) {
+            document.getElementById('support-chat-typing').style.display = 'none';
+            if (err.name === 'AbortError') {
+                // Убираем user-сообщение из истории — оно не получило ответа
+                if (this.messages.length && this.messages[this.messages.length - 1].role === 'user') {
+                    this.messages.pop();
+                }
+            } else {
+                this._appendMessage('assistant', `Ошибка: ${err.message}. Проверьте настройки в разделе Администратор.`);
+            }
+        } finally {
+            clearTimeout(timeoutId);
+            this.isGenerating = false;
+            this.abortController = null;
+            sendBtn.innerHTML = '<svg class="icon"><use href="#i-send"/></svg>';
+            sendBtn.title = 'Отправить';
+        }
+    }
+}
+
+/* ============================================================
    INITIALIZE
    ============================================================ */
 let App;
 document.addEventListener('DOMContentLoaded', () => {
     App = new Application();
 
-    // Expose copyCode globally for inline onclick
+    // Init Admin Manager
+    const adminManager = new AdminManager(App);
+    adminManager.init();
+    App.adminManager = adminManager;
+
+    // Intercept admin nav click to require password
+    const adminNavItem = document.querySelector('.nav-item[data-page="admin"]');
+    if (adminNavItem) {
+        // Remove the generic navigation listener for admin
+        const origNavigateTo = App.navigateTo.bind(App);
+        App.navigateTo = function(page) {
+            if (page === 'admin') {
+                if (adminManager.isAuthenticated) {
+                    origNavigateTo('admin');
+                    adminManager._renderForm();
+                } else {
+                    adminManager.showPasswordModal();
+                }
+                return;
+            }
+            origNavigateTo(page);
+        };
+    }
+
+    // Init Support Chat
+    const supportChat = new SupportChat(adminManager);
+    App.supportChat = supportChat;
+
+    // Expose globally
     window.App = App;
 });
