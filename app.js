@@ -960,28 +960,31 @@ class LLMService {
                     const data = trimmed.slice(5).trim();
                     if (data === '[DONE]') continue;
 
+                    // Разделяем try: парсинг (где ожидаемы malformed-чанки) и применение
+                    // дельты + onChunk (где ошибки должны всплывать наружу для диагностики,
+                    // а не глушиться как "malformed chunk").
+                    let parsed;
                     try {
-                        const parsed = JSON.parse(data);
-                        const delta = parsed.choices?.[0]?.delta;
-                        if (!delta) continue;
+                        parsed = JSON.parse(data);
+                    } catch {
+                        continue; // malformed chunk — это норма для SSE с keep-alive
+                    }
+                    const delta = parsed.choices?.[0]?.delta;
+                    if (!delta) continue;
 
-                        const reasoningDelta = delta.reasoning_content || delta.reasoning || null;
-                        const contentDelta = delta.content || null;
+                    const reasoningDelta = delta.reasoning_content || delta.reasoning || null;
+                    const contentDelta = delta.content || null;
 
-                        if (reasoningDelta) fullReasoning += reasoningDelta;
-                        if (contentDelta) fullContent += contentDelta;
+                    if (reasoningDelta) fullReasoning += reasoningDelta;
+                    if (contentDelta) fullContent += contentDelta;
 
-                        if (fullContent.length + fullReasoning.length > MAX_TOTAL_RESPONSE_BYTES) {
-                            throw new Error(`Ответ превысил ${MAX_TOTAL_RESPONSE_BYTES / (1024 * 1024)} МБ — соединение прервано. Частичный ответ сохранён.`);
-                        }
+                    if (fullContent.length + fullReasoning.length > MAX_TOTAL_RESPONSE_BYTES) {
+                        throw new Error(`Ответ превысил ${MAX_TOTAL_RESPONSE_BYTES / (1024 * 1024)} МБ — соединение прервано. Частичный ответ сохранён.`);
+                    }
 
-                        if (reasoningDelta || contentDelta) {
-                            onChunk({ contentDelta, reasoningDelta, fullContent, fullReasoning });
-                        }
-                    } catch (parseErr) {
-                        // Пробрасываем наши искусственные ошибки про лимиты, остальное — пропускаем как malformed chunk.
-                        if (parseErr && typeof parseErr.message === 'string' && parseErr.message.includes('превысил')) throw parseErr;
-                        /* skip malformed chunks */
+                    if (reasoningDelta || contentDelta) {
+                        // onChunk-ошибки (DOM, render) пробрасываем — не маскируем под malformed.
+                        onChunk({ contentDelta, reasoningDelta, fullContent, fullReasoning });
                     }
                 }
             }
@@ -2058,6 +2061,12 @@ class Application {
         const chunks = this._chunkCode(code, chunkBudget, this.state.selectedLang);
         if (chunks.length === 0) return;
 
+        // Маркер-сообщение для UI вместо полного кода (полный код = context bomb для follow-up).
+        const codeTokens = TokenEstimator.formatCount(TokenEstimator.estimate(code));
+        const codeLines = code.split('\n').length;
+        const markerText = `[Большой файл: ${codeLines} строк, ~${codeTokens} токенов]\nРазбит на ${chunks.length} частей. См. ответы по каждой ниже.`;
+        this.addChatMessage('user', markerText, meta);
+
         Toast.show(`Разбито на ${chunks.length} частей. Начинаю последовательный анализ...`, 'success', 4000);
 
         this.setGenerating(true);
@@ -2067,7 +2076,13 @@ class Application {
             for (let i = 0; i < chunks.length; i++) {
                 const chunk = chunks[i];
                 const chunkMeta = `${meta} | часть ${i + 1}/${chunks.length}`;
-                this.addChatMessage('user', `[Часть ${i + 1}/${chunks.length}]\n\n${chunk}`, chunkMeta);
+                // В UI чанковое user-сообщение показывает только заголовок + строки/токены,
+                // НЕ полный код чанка. Сам код летит в API messages, но не остаётся в чате.
+                const chunkLines = chunk.split('\n').length;
+                const chunkTokens = TokenEstimator.formatCount(TokenEstimator.estimate(chunk));
+                this.addChatMessage('user',
+                    `[Часть ${i + 1}/${chunks.length}: ${chunkLines} строк, ~${chunkTokens} токенов]`,
+                    chunkMeta);
 
                 // Для каждого чанка строим свой messages с явным контекстом про часть.
                 const chunkSystemPrompt = systemPrompt + `\n\n## КОНТЕКСТ ЧАНКОВАНИЯ\nЭто часть ${i + 1} из ${chunks.length} большого файла. Анализируй ТОЛЬКО этот фрагмент, не предполагай содержимое остальных частей. Не пиши "продолжение в следующей части" — финальная сводка будет сделана отдельно.`;
@@ -2096,9 +2111,20 @@ class Application {
                     });
                     allResults.push({ index: i + 1, content: result.content });
                 } catch (err) {
-                    streamDiv.remove();
+                    const contentEl = streamDiv.querySelector('.msg-content');
+                    const hasPartial = contentEl && contentEl.textContent && contentEl.textContent.trim().length > 0;
                     const isAbort = err.name === 'AbortError';
-                    this.addChatMessage('assistant', `**Ошибка на части ${i + 1}/${chunks.length}:** ${err.message}${isAbort ? '' : '\n\nПрерываю чанкованный анализ.'}`);
+                    if (hasPartial && !isAbort) {
+                        streamDiv.removeAttribute('id');
+                        const errNote = document.createElement('div');
+                        errNote.className = 'msg-error-note';
+                        errNote.style.cssText = 'margin-top:8px;padding:8px;border-left:3px solid #ef4444;background:rgba(239,68,68,0.08);color:#fca5a5;font-size:13px';
+                        errNote.textContent = `⚠ Часть ${i + 1} прервана: ${err.message}`;
+                        contentEl.appendChild(errNote);
+                    } else {
+                        streamDiv.remove();
+                        this.addChatMessage('assistant', `**Ошибка на части ${i + 1}/${chunks.length}:** ${err.message}${isAbort ? '' : '\n\nПрерываю чанкованный анализ.'}`);
+                    }
                     if (isAbort) {
                         Toast.show('Прервано пользователем', 'warning');
                     }
@@ -2129,10 +2155,17 @@ class Application {
                 Toast.show(saveErr.message, 'warning', 5000);
             }
 
-            // Follow-up активен — пользователь может попросить агрегацию.
-            this.state.conversationHistory = this.state.chatMessages
-                .filter(m => m.role === 'user' || m.role === 'assistant')
-                .map(m => ({ role: m.role, content: m.content }));
+            // Follow-up context: ТОЛЬКО system prompt + краткий маркер + assistant-ответы по чанкам.
+            // НЕ включаем полный код, НЕ включаем chunk user-messages — иначе следующий запрос
+            // моментально пробьёт контекст (это была HIGH-находка ревьюера).
+            this.state.conversationHistory = [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Я загрузил большой файл (${codeLines} строк, ~${codeTokens} токенов), разбили на ${chunks.length} частей. Ниже — независимые результаты анализа каждой части. Используй их для ответа на мои уточняющие вопросы. Полный код в контексте недоступен — если для ответа нужен конкретный фрагмент, попроси меня его прислать отдельно.` },
+                ...allResults.map(r => ({
+                    role: 'assistant',
+                    content: `## Результаты части ${r.index}/${chunks.length}\n\n${r.content}`
+                }))
+            ];
             document.getElementById('chat-followup').disabled = false;
             document.getElementById('btn-send-followup').disabled = false;
         } finally {
@@ -2158,16 +2191,15 @@ class Application {
             : (this.state.settings.localModel || 'local-model');
         const meta = `${role.shortName} → ${prompt.actionName} → ${lang} | ${modelName}`;
 
-        // Add user message
-        this.addChatMessage('user', code, meta);
-
         // Build system prompt with optional instruction file
         let systemPrompt = prompt.systemPrompt;
         if (prompt.contextContent) {
             systemPrompt += '\n\n--- Дополнительные инструкции ---\n' + prompt.contextContent;
         }
 
-        // Build API messages
+        // Build API messages для pre-flight оценки. User-message ДОБАВЛЯЕМ ПОСЛЕ pre-flight,
+        // чтобы при выборе chunking не оставлять полный код в чате (он бы попал в
+        // conversationHistory и пробил контекст на follow-up).
         const messages = this.llm.buildMessages(
             systemPrompt,
             code,
@@ -2186,23 +2218,32 @@ class Application {
             const ctxLabel = TokenEstimator.formatCount(ctx);
             const reservedLabel = TokenEstimator.formatCount(reserved);
             const overheadTokens = estimatedTokens - TokenEstimator.estimate(code);
-            const chunkBudget = Math.max(2000, budget - overheadTokens - 500); // запас на каждый чанк
+            // Реальный per-chunk budget: вычитаем overhead (system + language instr + attached file).
+            // Каждый чанк-запрос будет содержать тот же overhead + content чанка.
+            const realChunkBudget = budget - overheadTokens - 500;
             const codeTokens = TokenEstimator.estimate(code);
-            const expectedChunks = Math.ceil(codeTokens / chunkBudget);
+            // canChunk: реальный бюджет ≥ 1500 токенов на чанк (минимум для осмысленного анализа)
+            // И ожидается ≥2 чанков. Если overhead уже съел контекст — chunking не поможет.
+            const canChunk = realChunkBudget >= 1500 && Math.ceil(codeTokens / realChunkBudget) >= 2;
+            const expectedChunks = canChunk ? Math.ceil(codeTokens / realChunkBudget) : 0;
+            const chunkBudget = canChunk ? realChunkBudget : 0;
 
             const choice = await this._askOverflowAction({
                 used, ctxLabel, reservedLabel,
                 isLocal: this.state.settings.mode === 'local',
-                canChunk: expectedChunks >= 2,
+                canChunk,
                 expectedChunks
             });
             if (choice === 'cancel') return;
             if (choice === 'chunk') {
-                // Делегируем в чанкованный путь, не возвращаемся в runAnalysis.
+                // Делегируем в чанкованный путь, не добавляя full-code user message.
                 return this._runAnalysisChunked({ code, prompt, systemPrompt, meta, chunkBudget });
             }
             // 'force' — продолжаем с риском обрыва.
         }
+
+        // Pre-flight пройден (или force) — теперь добавляем user-message с полным кодом.
+        this.addChatMessage('user', code, meta);
 
         // Store conversation history for follow-ups
         this.state.conversationHistory = [...messages];
@@ -2260,8 +2301,22 @@ class Application {
                 streamDiv.removeAttribute('id');
                 this.updateStreamingMessage(streamDiv, { fullContent: '*Генерация остановлена пользователем*', fullReasoning: '' });
             } else {
-                streamDiv.remove();
-                this.addChatMessage('assistant', `**Ошибка:** ${err.message}\n\nПроверьте настройки подключения к API.`);
+                // Если в streamDiv уже есть отрисованный частичный ответ — НЕ удаляем его,
+                // только аппендим error-note. Иначе пользователь теряет ответ модели,
+                // даже если callLLM явно сказал "Частичный ответ сохранён" (idle/total-bytes).
+                const contentEl = streamDiv.querySelector('.msg-content');
+                const hasPartial = contentEl && contentEl.textContent && contentEl.textContent.trim().length > 0;
+                if (hasPartial) {
+                    streamDiv.removeAttribute('id');
+                    const errNote = document.createElement('div');
+                    errNote.className = 'msg-error-note';
+                    errNote.style.cssText = 'margin-top:8px;padding:8px;border-left:3px solid #ef4444;background:rgba(239,68,68,0.08);color:#fca5a5;font-size:13px';
+                    errNote.textContent = `⚠ Стрим прерван: ${err.message}`;
+                    contentEl.appendChild(errNote);
+                } else {
+                    streamDiv.remove();
+                    this.addChatMessage('assistant', `**Ошибка:** ${err.message}\n\nПроверьте настройки подключения к API.`);
+                }
                 Toast.show(err.message, 'error', 6000);
             }
         } finally {
@@ -2311,8 +2366,20 @@ class Application {
                 streamDiv.removeAttribute('id');
                 this.updateStreamingMessage(streamDiv, { fullContent: '*Генерация остановлена*', fullReasoning: '' });
             } else {
-                streamDiv.remove();
-                this.addChatMessage('assistant', `**Ошибка:** ${err.message}`);
+                const contentEl = streamDiv.querySelector('.msg-content');
+                const hasPartial = contentEl && contentEl.textContent && contentEl.textContent.trim().length > 0;
+                if (hasPartial) {
+                    streamDiv.removeAttribute('id');
+                    const errNote = document.createElement('div');
+                    errNote.className = 'msg-error-note';
+                    errNote.style.cssText = 'margin-top:8px;padding:8px;border-left:3px solid #ef4444;background:rgba(239,68,68,0.08);color:#fca5a5;font-size:13px';
+                    errNote.textContent = `⚠ Стрим прерван: ${err.message}`;
+                    contentEl.appendChild(errNote);
+                } else {
+                    streamDiv.remove();
+                    this.addChatMessage('assistant', `**Ошибка:** ${err.message}`);
+                }
+                Toast.show(err.message, 'error', 5000);
             }
         } finally {
             this.setGenerating(false);
@@ -2495,6 +2562,20 @@ class Application {
         document.getElementById('setting-cloud-url').value = s.cloudUrl || 'https://api.deepseek.com';
         document.getElementById('setting-local-url').value = s.localUrl || 'http://172.16.33.12:9997';
 
+        // Если есть сохранённая локальная модель — пре-наполняем select временной опцией,
+        // чтобы пользователь видел текущий выбор без клика на "Загрузить список".
+        const localSelect = document.getElementById('setting-local-model-select');
+        if (localSelect && s.localModel) {
+            const existing = [...localSelect.options].find(o => o.value === s.localModel);
+            if (!existing) {
+                const opt = document.createElement('option');
+                opt.value = s.localModel;
+                opt.textContent = s.localModel + ' (сохранённая)';
+                localSelect.appendChild(opt);
+            }
+            localSelect.value = s.localModel;
+        }
+
         // DeepSeek model radio
         const modelValue = s.cloudModel || 'deepseek-chat';
         const radios = document.querySelectorAll('input[name="deepseek-model"]');
@@ -2555,7 +2636,12 @@ class Application {
         this.state.settings.cloudModel = checkedRadio ? checkedRadio.value : 'deepseek-chat';
         this.state.settings.cloudUrl = document.getElementById('setting-cloud-url').value.trim() || 'https://api.deepseek.com';
         this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim() || 'http://172.16.33.12:9997';
-        this.state.settings.localModel = document.getElementById('setting-local-model-select').value;
+        // Не перезаписываем localModel пустым значением: если пользователь открыл настройки
+        // без "Загрузить список", select пуст — оставляем сохранённое значение.
+        const localModelVal = document.getElementById('setting-local-model-select').value;
+        if (localModelVal) {
+            this.state.settings.localModel = localModelVal;
+        }
         this.state.settings.temperature = parseFloat(document.getElementById('setting-temperature').value) || 0.3;
         this.state.settings.maxTokens = parseInt(document.getElementById('setting-max-tokens').value) || 4096;
         this.state.settings.contextWindow = parseInt(document.getElementById('setting-context-window').value) || 65536;
@@ -3461,7 +3547,8 @@ class AdminManager {
                     contextWindow: Schema.integer(p.contextWindow, defaults.contextWindow, { min: 1024, max: 1048576 }),
                     requestTimeoutSec: Schema.integer(p.requestTimeoutSec, 90, { min: 30, max: 1800 }),
                     systemPrompt: Schema.string(p.systemPrompt, defaults.systemPrompt, 200000),
-                    welcomeMessage: Schema.string(p.welcomeMessage, defaults.welcomeMessage, 50000)
+                    welcomeMessage: Schema.string(p.welcomeMessage, defaults.welcomeMessage, 50000),
+                    apiKeySessionOnly: Schema.boolean(p.apiKeySessionOnly, false)
                 };
             },
             null
@@ -3470,7 +3557,13 @@ class AdminManager {
     }
 
     saveSettings() {
-        localStorage.setItem('codesentinel_admin_settings', JSON.stringify(this.settings));
+        // session-only режим: ключ остаётся только в RAM, не пишется на диск.
+        if (this.settings.apiKeySessionOnly) {
+            const sanitized = { ...this.settings, cloudApiKey: '' };
+            localStorage.setItem('codesentinel_admin_settings', JSON.stringify(sanitized));
+        } else {
+            localStorage.setItem('codesentinel_admin_settings', JSON.stringify(this.settings));
+        }
     }
 
     init() {
@@ -3538,6 +3631,8 @@ class AdminManager {
 
         // Cloud
         document.getElementById('admin-api-key').value = s.cloudApiKey || '';
+        const adminSessionOnly = document.getElementById('admin-key-session-only');
+        if (adminSessionOnly) adminSessionOnly.checked = !!s.apiKeySessionOnly;
         document.getElementById('admin-cloud-url').value = s.cloudUrl || 'https://api.deepseek.com';
         document.querySelectorAll('input[name="admin-deepseek-model"]').forEach(r => {
             r.checked = r.value === (s.cloudModel || 'deepseek-chat');
@@ -3547,7 +3642,14 @@ class AdminManager {
         // Local
         document.getElementById('admin-local-url').value = s.localUrl || 'http://172.16.33.12:9997';
         const select = document.getElementById('admin-local-model-select');
-        if (s.localModel && select.querySelector(`option[value="${s.localModel}"]`)) {
+        if (s.localModel) {
+            const existing = select.querySelector(`option[value="${CSS.escape(s.localModel)}"]`);
+            if (!existing) {
+                const opt = document.createElement('option');
+                opt.value = s.localModel;
+                opt.textContent = s.localModel + ' (сохранённая)';
+                select.appendChild(opt);
+            }
             select.value = s.localModel;
         }
 
@@ -3591,7 +3693,11 @@ class AdminManager {
         const checkedRadio = document.querySelector('input[name="admin-deepseek-model"]:checked');
         this.settings.cloudModel = checkedRadio ? checkedRadio.value : 'deepseek-chat';
         this.settings.localUrl = document.getElementById('admin-local-url').value.trim() || 'http://172.16.33.12:9997';
-        this.settings.localModel = document.getElementById('admin-local-model-select').value;
+        // Не затираем сохранённую модель пустым select (если "Загрузить список" не нажат).
+        const adminLocalModelVal = document.getElementById('admin-local-model-select').value;
+        if (adminLocalModelVal) {
+            this.settings.localModel = adminLocalModelVal;
+        }
         const tempRaw = parseFloat(document.getElementById('admin-temperature').value);
         this.settings.temperature = isNaN(tempRaw) ? 0.2 : tempRaw;
         const tokensRaw = parseInt(document.getElementById('admin-max-tokens').value);
@@ -3600,6 +3706,8 @@ class AdminManager {
         this.settings.contextWindow = isNaN(ctxRaw) ? 4096 : ctxRaw;
         this.settings.systemPrompt = document.getElementById('admin-system-prompt').value.trim() || DEFAULT_SUPPORT_SYSTEM_PROMPT;
         this.settings.welcomeMessage = document.getElementById('admin-welcome-message').value.trim() || DEFAULT_SUPPORT_WELCOME;
+        const adminSessionOnlyEl = document.getElementById('admin-key-session-only');
+        if (adminSessionOnlyEl) this.settings.apiKeySessionOnly = !!adminSessionOnlyEl.checked;
         this.saveSettings();
     }
 
