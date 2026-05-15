@@ -472,13 +472,23 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                                     </div>
                                 </div>
                                 <div class="form-group">
+                                    <label for="setting-ttfb-timeout">
+                                        Таймаут до первого ответа (сек)
+                                        <span class="range-value" id="ttfb-timeout-value">120</span>
+                                    </label>
+                                    <input type="number" id="setting-ttfb-timeout" min="10" max="600" step="10" value="120" class="model-dropdown">
+                                    <div class="range-labels">
+                                        <span>Сколько ждать, пока сервер начнёт отдавать данные. Если запрос слишком большой и сервер «думает» дольше — таймаут сработает быстрее, чем idle, и подскажет о проблеме.</span>
+                                    </div>
+                                </div>
+                                <div class="form-group">
                                     <label for="setting-request-timeout">
-                                        Таймаут ответа (сек)
+                                        Idle-таймаут между чанками (сек)
                                         <span class="range-value" id="request-timeout-value">300</span>
                                     </label>
                                     <input type="number" id="setting-request-timeout" min="30" max="1800" step="30" value="300" class="model-dropdown">
                                     <div class="range-labels">
-                                        <span>Сколько секунд ждать первый чанк / простой между чанками. Прерывает зависшие генерации.</span>
+                                        <span>После старта стрима — сколько ждать между токенами. Reasoning-модели могут «думать» долго — увеличьте до 600+.</span>
                                     </div>
                                 </div>
                             </div>

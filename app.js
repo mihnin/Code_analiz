@@ -620,6 +620,7 @@ class AppState {
             maxTokens: 4096,
             contextWindow: 65536,
             requestTimeoutSec: 300,
+            ttfbTimeoutSec: 120,
             historyEnabled: true,
             historyTTLDays: 30,
             apiKeySessionOnly: false
@@ -651,6 +652,7 @@ class AppState {
                     maxTokens: Schema.integer(p.maxTokens, 4096, { min: 256, max: 16384 }),
                     contextWindow: Schema.integer(p.contextWindow, 65536, { min: 1024, max: 1048576 }),
                     requestTimeoutSec: Schema.integer(p.requestTimeoutSec, 300, { min: 30, max: 1800 }),
+                    ttfbTimeoutSec: Schema.integer(p.ttfbTimeoutSec, 120, { min: 10, max: 600 }),
                     historyEnabled: Schema.boolean(p.historyEnabled, true),
                     historyTTLDays: Schema.integer(p.historyTTLDays, 30, { min: 0, max: 365 }),
                     apiKeySessionOnly: Schema.boolean(p.apiKeySessionOnly, false)
@@ -853,24 +855,31 @@ class LLMService {
             max_tokens: this.state.settings.maxTokens
         };
 
-        // Один и тот же таймаут используется и как TTFB (до первого data:), и как idle-timeout
-        // между чанками: если в течение N секунд от модели нет данных — abort.
-        const timeoutSec = this.state.settings.requestTimeoutSec || 300;
+        // Раздельные таймауты:
+        //  - ttfbTimeoutSec (по умолчанию 120с) — на ожидание ПЕРВОГО чанка. Сервер
+        //    может молча обрабатывать огромный промпт минутами; короткий TTFB-таймаут
+        //    помогает быстрее показать пользователю, что что-то пошло не так
+        //    (вероятно, n_ctx сервера не вмещает запрос).
+        //  - requestTimeoutSec (по умолчанию 300с) — idle между чанками после старта
+        //    стрима. Reasoning-модели могут думать долго между токенами.
+        const ttfbTimeoutSec = this.state.settings.ttfbTimeoutSec || 120;
+        const idleTimeoutSec = this.state.settings.requestTimeoutSec || 300;
         const timeoutController = new AbortController();
         let timeoutFired = false;
         let firstDataReceived = false;
         let timeoutId = null;
-        const armTimeout = () => {
+        const armTimeout = (sec) => {
             if (timeoutId) clearTimeout(timeoutId);
             timeoutId = setTimeout(() => {
                 timeoutFired = true;
                 timeoutController.abort();
-            }, timeoutSec * 1000);
+            }, sec * 1000);
         };
         const clearTtfbTimeout = () => {
             if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
         };
-        armTimeout();
+        // Стартуем с TTFB. На первом data:-чанке переармируемся на idle.
+        armTimeout(ttfbTimeoutSec);
         const combinedSignal = LLMService._combineSignals(abortSignal, timeoutController.signal);
 
         let response;
@@ -884,13 +893,13 @@ class LLMService {
         } catch (err) {
             clearTtfbTimeout();
             if (err.name === 'AbortError') {
-                // Различаем пользовательский abort vs таймаут
+                // Различаем пользовательский abort vs TTFB-таймаут на этапе fetch.
                 if (timeoutFired) {
                     const isLocal = this.state.settings.mode === 'local';
                     const hint = isLocal
-                        ? ` Возможные причины: модель не загружена в Xinference/LM Studio, превышен n_ctx сервера, либо сервер обрабатывает слишком большой запрос. Проверьте лог Xinference и уменьшите объём кода.`
+                        ? ` Возможные причины: модель не загружена в Xinference/LM Studio, превышен n_ctx сервера, либо сервер обрабатывает слишком большой запрос. Проверьте лог Xinference и уменьшите объём кода или включите чанкование.`
                         : ` Возможные причины: сетевая задержка или перегрузка API. Попробуйте повторить запрос.`;
-                    throw new Error(`Таймаут ответа модели (${timeoutSec} сек).${hint}`);
+                    throw new Error(`Таймаут до первого ответа сервера (${ttfbTimeoutSec} сек).${hint}`);
                 }
                 throw err;
             }
@@ -953,9 +962,10 @@ class LLMService {
                     const trimmed = line.trim();
                     if (!trimmed || !trimmed.startsWith('data:')) continue;
 
-                    // Любая data:-строка от сервера: сбрасываем флаг первого чанка и переармируем idle-таймер.
+                    // Первый data: от сервера → переход от TTFB-таймера к idle-таймеру.
+                    // Следующие data: → reset idle-таймера (модель «жива», просто думает между токенами).
                     if (!firstDataReceived) firstDataReceived = true;
-                    armTimeout();
+                    armTimeout(idleTimeoutSec);
 
                     const data = trimmed.slice(5).trim();
                     if (data === '[DONE]') continue;
@@ -997,14 +1007,14 @@ class LLMService {
                 const isLocal = this.state.settings.mode === 'local';
                 if (!firstDataReceived) {
                     const hint = isLocal
-                        ? ` Сервер открыл стрим, но не прислал ни одного чанка за ${timeoutSec} сек. Возможные причины: модель зависла на промпте, GPU/CPU перегружены. Проверьте лог Xinference.`
-                        : ` Сервер открыл стрим, но не прислал данные за ${timeoutSec} сек.`;
-                    throw new Error(`Таймаут первого чанка (${timeoutSec} сек).${hint}`);
+                        ? ` Сервер открыл стрим, но не прислал ни одного чанка за ${ttfbTimeoutSec} сек. Возможные причины: запрос слишком большой для n_ctx модели — сервер «думает» над промптом дольше TTFB-таймаута. Включите чанкование или уменьшите код.`
+                        : ` Сервер открыл стрим, но не прислал данные за ${ttfbTimeoutSec} сек.`;
+                    throw new Error(`Таймаут первого чанка (${ttfbTimeoutSec} сек).${hint}`);
                 } else {
                     const hint = isLocal
                         ? ` Модель замолчала посреди генерации. Возможные причины: переполнение n_ctx во время вывода, OOM, сбой сервера. Частичный ответ сохранён.`
                         : ` Соединение зависло посреди стрима.`;
-                    throw new Error(`Idle-таймаут стрима (${timeoutSec} сек без данных).${hint}`);
+                    throw new Error(`Idle-таймаут стрима (${idleTimeoutSec} сек без данных).${hint}`);
                 }
             }
             throw err;
@@ -1982,8 +1992,15 @@ class Application {
      * Спрашивает пользователя что делать при переполнении контекста.
      * Возвращает 'cancel' | 'force' | 'chunk'.
      */
-    _askOverflowAction({ used, ctxLabel, reservedLabel, isLocal, canChunk, expectedChunks }) {
-        const serverHint = isLocal
+    _askOverflowAction({ used, ctxLabel, reservedLabel, isLocal, canChunk, expectedChunks, mismatch }) {
+        // Mismatch предупреждение — самое важное: значит UI-значение завышено относительно
+        // реального n_ctx модели. Без этого предупреждения pre-flight check мог бы пропустить
+        // overflow и пользователь увидел бы зависание/таймаут вместо понятного сообщения.
+        const mismatchHint = mismatch
+            ? `\n\n⚠ ВАЖНО: «Окно контекста» в настройках = ${mismatch.uiCtx}, но загруженная модель сообщает ${mismatch.realCtx}. Расчёт ведётся по реальному значению модели. Чтобы избежать повторных предупреждений — нажмите «Загрузить список моделей» в настройках, нужное значение проставится автоматически.`
+            : '';
+
+        const serverHint = isLocal && !mismatch
             ? `\n\nДля локальных моделей значение «Окно контекста» должно совпадать с n_ctx модели в Xinference/LM Studio/Ollama. Если сервер загружен с меньшим контекстом — увеличьте при перезапуске.`
             : '';
 
@@ -1991,7 +2008,7 @@ class Application {
             ? `\n\n[ОК] = Разбить на ~${expectedChunks} частей и проанализировать каждую отдельно (рекомендуется для больших файлов).\n[Отмена] = Не отправлять.`
             : `\n\n[ОК] = Отправить как есть (может оборваться по контексту).\n[Отмена] = Не отправлять.`;
 
-        const msg = `Запрос ~${used} токенов превышает доступный бюджет (${ctxLabel} контекст − ${reservedLabel} резерв ответа).${serverHint}${chunkOption}`;
+        const msg = `Запрос ~${used} токенов превышает доступный бюджет (${ctxLabel} контекст − ${reservedLabel} резерв ответа).${mismatchHint}${serverHint}${chunkOption}`;
 
         if (!canChunk) {
             return confirm(msg) ? 'force' : 'cancel';
@@ -2213,8 +2230,18 @@ class Application {
 
         // Pre-flight проверка бюджета токенов. Считаем не на глазок, а по реальным messages.
         const estimatedTokens = messages.reduce((sum, m) => sum + TokenEstimator.estimate(m.content || ''), 0);
-        const ctx = this.state.settings.contextWindow || 0;
+        const uiCtx = this.state.settings.contextWindow || 0;
         const reserved = this.state.settings.maxTokens || 0;
+
+        // Если есть кэш моделей и реальный contextLength модели < UI-значения,
+        // считаем по реальному (защита от рассинхрона UI vs server n_ctx).
+        const isLocal = this.state.settings.mode === 'local';
+        const cachedModel = isLocal ? this._localModelsCache?.[this.state.settings.localModel] : null;
+        const realCtx = cachedModel?.contextLength && cachedModel.contextLength < uiCtx
+            ? cachedModel.contextLength
+            : uiCtx;
+        const mismatchDetected = realCtx !== uiCtx && realCtx > 0;
+        const ctx = realCtx > 0 ? realCtx : uiCtx;
         const budget = Math.max(0, ctx - reserved);
 
         if (ctx > 0 && estimatedTokens > budget) {
@@ -2236,7 +2263,11 @@ class Application {
                 used, ctxLabel, reservedLabel,
                 isLocal: this.state.settings.mode === 'local',
                 canChunk,
-                expectedChunks
+                expectedChunks,
+                mismatch: mismatchDetected ? {
+                    realCtx: TokenEstimator.formatCount(realCtx),
+                    uiCtx: TokenEstimator.formatCount(uiCtx)
+                } : null
             });
             if (choice === 'cancel') return;
             if (choice === 'chunk') {
@@ -2501,6 +2532,13 @@ class Application {
                 if (label) label.textContent = timeoutInput.value;
             });
         }
+        const ttfbInput = document.getElementById('setting-ttfb-timeout');
+        if (ttfbInput) {
+            ttfbInput.addEventListener('input', () => {
+                const label = document.getElementById('ttfb-timeout-value');
+                if (label) label.textContent = ttfbInput.value;
+            });
+        }
 
         // Toggle password visibility
         document.querySelectorAll('.toggle-password').forEach(btn => {
@@ -2602,6 +2640,10 @@ class Application {
         document.getElementById('context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
         const timeoutEl = document.getElementById('setting-request-timeout');
         if (timeoutEl) timeoutEl.value = s.requestTimeoutSec ?? 300;
+        const ttfbEl = document.getElementById('setting-ttfb-timeout');
+        if (ttfbEl) ttfbEl.value = s.ttfbTimeoutSec ?? 120;
+        const ttfbLabel = document.getElementById('ttfb-timeout-value');
+        if (ttfbLabel && ttfbEl) ttfbLabel.textContent = ttfbEl.value;
 
         // Privacy: history toggle + TTL.
         const histToggle = document.getElementById('setting-history-enabled');
@@ -2653,6 +2695,11 @@ class Application {
         if (timeoutEl) {
             const t = parseInt(timeoutEl.value);
             this.state.settings.requestTimeoutSec = (isNaN(t) || t < 30) ? 300 : Math.min(t, 1800);
+        }
+        const ttfbSaveEl = document.getElementById('setting-ttfb-timeout');
+        if (ttfbSaveEl) {
+            const t = parseInt(ttfbSaveEl.value);
+            this.state.settings.ttfbTimeoutSec = (isNaN(t) || t < 10) ? 120 : Math.min(t, 600);
         }
         const histToggleEl = document.getElementById('setting-history-enabled');
         if (histToggleEl) this.state.settings.historyEnabled = !!histToggleEl.checked;
@@ -2799,21 +2846,26 @@ class Application {
 
         const isReasoning = isLikelyReasoningModel(modelName);
 
-        // Auto-set context window from model metadata if available
+        // Auto-set context window from model metadata if available.
+        // ВАЖНО: выбираем largest option ≤ contextLength (не closest), чтобы НЕ завысить
+        // оценку относительно реального n_ctx сервера. Завышение → pre-flight check
+        // пропускает overflow → запрос виснет на сервере.
         const modelData = this._localModelsCache?.[modelName];
         let ctxInfo = '';
         if (modelData?.contextLength) {
             const ctxK = Math.round(modelData.contextLength / 1024);
             ctxInfo = ` | Контекст: ${ctxK}K`;
-            // Auto-select closest context window value
             const ctxSelect = document.getElementById('setting-context-window');
-            const options = [...ctxSelect.options].map(o => parseInt(o.value));
-            const closest = options.reduce((prev, curr) =>
-                Math.abs(curr - modelData.contextLength) < Math.abs(prev - modelData.contextLength) ? curr : prev
-            );
-            ctxSelect.value = closest;
+            const options = [...ctxSelect.options].map(o => parseInt(o.value)).sort((a, b) => a - b);
+            const fitOptions = options.filter(v => v <= modelData.contextLength);
+            const target = fitOptions.length > 0 ? fitOptions[fitOptions.length - 1] : options[0];
+            ctxSelect.value = String(target);
             const ctxVal = parseInt(ctxSelect.value);
             document.getElementById('context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
+            // Сразу синхронизируем state.settings — иначе pre-flight check в runAnalysis
+            // продолжит использовать старое значение до клика "Сохранить настройки".
+            this.state.settings.contextWindow = target;
+            this.state.saveSettings();
         }
 
         indicator.style.display = 'flex';
@@ -3550,6 +3602,7 @@ class AdminManager {
                     maxTokens: Schema.integer(p.maxTokens, defaults.maxTokens, { min: 64, max: 16384 }),
                     contextWindow: Schema.integer(p.contextWindow, defaults.contextWindow, { min: 1024, max: 1048576 }),
                     requestTimeoutSec: Schema.integer(p.requestTimeoutSec, 90, { min: 30, max: 1800 }),
+                    ttfbTimeoutSec: Schema.integer(p.ttfbTimeoutSec, 60, { min: 10, max: 600 }),
                     systemPrompt: Schema.string(p.systemPrompt, defaults.systemPrompt, 200000),
                     welcomeMessage: Schema.string(p.welcomeMessage, defaults.welcomeMessage, 50000),
                     apiKeySessionOnly: Schema.boolean(p.apiKeySessionOnly, false)
