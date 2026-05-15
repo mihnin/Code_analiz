@@ -10,9 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 No build tools, no npm, no bundlers. Open `index.html` directly in a browser. Fully autonomous — zero external dependencies.
 
-**Deployment files** (air-gapped/КСПД): `index.html`, `styles.css`, `app.js`, `logo.png` — 4 files in one folder.
+**Deployment files** (air-gapped/КСПД): `index.html`, `styles.css`, `app.js`, `logo.png` — 4 files in one folder. `grep` confirms no other assets referenced anywhere.
 
-**Syntax check**: `node -c app.js` (no runtime needed, just syntax validation).
+**Syntax check**: `node -c app.js` (no runtime needed, just syntax validation). Run this after any non-trivial edit.
+
+**Build deploy archive** (for handing to a colleague / server admin): a small Python snippet bundles the 4 essentials + a Russian-language README into `AI-scanner.zip` under a single `AI-scanner/` folder. The archive **is committed to the repo** for direct GitHub-download distribution — rebuild it after any change to `index.html` / `styles.css` / `app.js` / `logo.png` to keep it in sync. Trade-off acknowledged: binary churn in git history; if that becomes a problem, switch to a release-asset workflow.
 
 ## Architecture
 
@@ -172,12 +174,13 @@ CSS custom properties in `:root`. Key tokens:
 
 When user has a file too big for the model's context (typical case: 3000+ lines locally), the recommended path is **chunking, not raw `force`**:
 
-- Triggered automatically when pre-flight detects overflow AND `expectedChunks >= 2`.
+- Triggered automatically when pre-flight detects overflow AND `canChunk` (real per-chunk budget ≥1500 tokens AND `expectedChunks ≥ 2`). If `attachedFileContent` overhead already eats the context, chunking is **not offered** — only cancel/force.
 - `_chunkCode` prefers logical boundaries — language-specific function/class/procedure starts and blank lines — over arbitrary line counts. Each chunk targets `chunkBudget` tokens but may overflow up to 20% if no boundary is nearby.
 - Each chunk runs as an **independent `callLLM`** with a system-prompt suffix telling the model "Это часть N из M ... не предполагай содержимое остальных частей".
 - Sequential, not parallel — each chunk waits for the previous to complete. Aborting any chunk stops the whole run.
+- **User-message in UI for chunked path** = compact marker (`[Большой файл: N строк, ~K токенов] Разбит на M частей`). Full code is **never** added to `chatMessages` — that's what prevents the follow-up context bomb.
 - Final summary-message (added directly to chat, not via LLM) tells the user: "для получения единой сводки — задайте уточняющий вопрос «Объедини находки в одну таблицу»".
-- History entry for a chunked run has `apiMessages = []` (the per-chunk conversations are not glued into a single sequence to avoid context bombs on restore).
+- **History entry for a chunked run** stores `apiMessages = compactHistory` — the same compact `conversationHistory` used in the live session: `system` + one short user marker + N assistant chunk-results. After `restoreFromHistory`, follow-up works and the model has access to all findings; only the original full code is absent (by design, to avoid restoring a 100K-token context).
 
 ## Reference Files
 
@@ -187,3 +190,11 @@ When user has a file too big for the model's context (typical case: 3000+ lines 
 - `logo.png` — brand logo (compass)
 - `prompts/infosec_universal_vulnerability_analysis.md` — comprehensive security prompt template (570 lines, all languages). **Note**: superseded by the in-app short prompts in `DEFAULT_PROMPTS` after v9 revision; kept as a reference for the security team. Not loaded by the app.
 - `примеры плохих файлов/` — sample vulnerable Python files from InfoSec team (test reference for security prompts)
+- `AI-scanner.zip` — pre-built deploy archive for end-users (tracked in git for easy GitHub download). Contains only the 4 essentials + a short Russian README.txt inside an `AI-scanner/` subfolder. **Rebuild after any change to the 4 essentials.**
+
+## Verification Loop for Reviewers
+
+When a reviewer reports a finding, before fixing **verify the claim against current `HEAD`** — don't trust line numbers alone:
+1. `git log --oneline -5` to see the latest commits the reviewer might or might not have seen.
+2. `grep`/`Read` the actual line numbers cited. v10→v11 reviews had **2 false positives out of 4** because the reviewer was checking an older revision.
+3. If the finding is real, create a TaskCreate, fix it, and reference the specific line/function in the commit message.
