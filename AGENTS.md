@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -22,7 +22,7 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
 
 - **`REASONING_PATTERNS` + `isLikelyReasoningModel()`** — heuristic detection of thinking/reasoning models by name patterns (`r1`, `reasoner`, `qwen3`, `qwq`, `cot`, `thinking`).
 - **`AppState`** — centralized state: settings, prompts, history, chat messages. Persists to `localStorage`. `getPromptsForRole(role, language)` filters prompts by role and optionally by programming language.
-- **`LLMService`** — API calls via OpenAI-compatible protocol. `callLLM()` streams SSE, parses `delta.content`, `delta.reasoning_content`, and `delta.reasoning`, returns `{ content, reasoning }`. Uses **TTFB-only timeout** (manual `setTimeout`, cleared after response headers received) so long generations don't get cut mid-stream. Differentiates user-abort vs timeout vs network error (`TypeError`) and parses server error bodies for context-overflow keywords (`context length`, `n_ctx`, `max_position`, etc.) to surface actionable messages. `testConnection()` pings API. `fetchLocalModels()` discovers models via GET `/v1/models` (also extracts `context_length` metadata). Helpers: `_createTimeoutSignal(ms)` (polyfill for `AbortSignal.timeout()`), `_combineSignals(...signals)` (combines user-abort + timeout via `AbortSignal.any` with fallback).
+- **`LLMService`** — API calls via OpenAI-compatible protocol. `callLLM()` streams SSE, parses `delta.content`, `delta.reasoning_content`, and `delta.reasoning`, returns `{ content, reasoning }`. `testConnection()` pings API. `fetchLocalModels()` discovers models via GET `/v1/models` (also extracts `context_length` metadata). `_createTimeoutSignal(ms)` — polyfill for `AbortSignal.timeout()` (browser compatibility).
 - **`MarkdownRenderer`** — static class. Markdown→HTML with XSS protection (escape first, restore code blocks after). Supports: headers, bold/italic, tables, ordered/unordered lists, code blocks (with copy button via event delegation), blockquotes, horizontal rules.
 - **`TokenEstimator`** — static class. Cyrillic ~2 chars/token, Latin/code ~4 chars/token. Drives real-time token meter.
 - **`Toast`** — notification system with null-safe container access.
@@ -39,12 +39,11 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
 1. User selects Role → Language → Action → pastes code/text
 2. `runAnalysis()` finds prompt, appends `contextContent` (instruction file) to system prompt with `--- Дополнительные инструкции ---` separator
 3. `buildMessages()` constructs: `[system + language instruction] + [language] + [attached file] + [user code]`. Language instruction ("ВАЖНО: Пользователь указал язык — X") enforces correct language detection by the LLM.
-4. **Pre-flight budget check**: `runAnalysis()` sums `TokenEstimator.estimate(m.content)` over messages, compares to `contextWindow − maxTokens`. If exceeded, shows native `confirm()` with a hint (Xinference-aware when `mode === 'local'`) — user can cancel or proceed anyway.
-5. `createStreamingMessage()` shows waiting indicator with elapsed timer ("Отправка запроса..." → "Ожидание ответа модели... (Xs)")
-6. `callLLM()` streams SSE; `onChunk({ contentDelta, reasoningDelta, fullContent, fullReasoning })` updates UI in real-time. First chunk clears the waiting indicator.
-7. `updateStreamingMessage()` renders content via MarkdownRenderer, shows reasoning section with toggle if model produces `reasoning_content`
-8. `finalizeStreamingMessage()` adds model badge: "С рассуждениями (~N токенов)", "Без рассуждений", or "Рассуждения не получены" (when model detected as reasoning but no reasoning_content received)
-9. Conversation history maintained for follow-ups; token meter updates after each exchange
+4. `createStreamingMessage()` shows waiting indicator with elapsed timer ("Отправка запроса..." → "Ожидание ответа модели... (Xs)")
+5. `callLLM()` streams SSE; `onChunk({ contentDelta, reasoningDelta, fullContent, fullReasoning })` updates UI in real-time. First chunk clears the waiting indicator.
+6. `updateStreamingMessage()` renders content via MarkdownRenderer, shows reasoning section with toggle if model produces `reasoning_content`
+7. `finalizeStreamingMessage()` adds model badge: "С рассуждениями (~N токенов)", "Без рассуждений", or "Рассуждения не получены" (when model detected as reasoning but no reasoning_content received)
+8. Conversation history maintained for follow-ups; token meter updates after each exchange
 
 ### Reasoning/Thinking Model Support
 
@@ -79,22 +78,20 @@ Prompts are stored in `AppState.prompts` array. Each prompt has: `id`, `role`, `
 Token meter in code panel footer tracks context window usage in real-time:
 - **Segments**: system prompt (purple) + user input (blue) + attached file (yellow) + chat history (teal) + reserved for response (grey)
 - **Budget**: `usedTokens + maxTokens` ≤ `contextWindow`; bar yellow >80%, red when exceeded
-- **Context window**: client-side only (not sent to API); must match model's real context window for accurate meter. Auto-set to 8K for local, 64K for cloud on mode switch. Auto-detected from model metadata when available (via `/v1/models` `context_length`).
-- **Pre-flight enforcement**: `runAnalysis()` re-estimates the full `messages` payload and blocks (via `confirm`) if `estimated > contextWindow − maxTokens`. The footer meter is informational; this check is the actual guard.
+- **Context window**: client-side only (not sent to API); must match model's real context window for accurate meter. Auto-set to 8K for local, 64K for cloud on mode switch. Auto-detected from model metadata when available.
 - **Safety**: division by zero guard when `contextWindow` is 0
 
 ### API Configuration
 
 - **Cloud**: DeepSeek API (OpenAI-compatible). `deepseek-chat` (fast) and `deepseek-reasoner` (CoT).
-- **Local**: LM Studio/Ollama/Xinference at configurable URL (default `http://172.16.33.12:9997` — Xinference). `/v1/chat/completions` for inference, `/v1/models` for discovery (with `context_length` extraction).
-- **Shared settings**: `contextWindow` (4K–256K, **client-side meter only, NOT sent to API**), `maxTokens` (256–16384, default 4096), `temperature` (0–2, default 0.3), `requestTimeoutSec` (30–1800, default 300 — TTFB only). Only `temperature` and `maxTokens` go to the API; `contextWindow` drives the token meter, `requestTimeoutSec` drives the TTFB timer.
-- **Server-side n_ctx vs UI contextWindow**: the UI value is purely cosmetic. Real n_ctx is set at model load (Xinference `--context-length`, LM Studio Load Settings → Context Length, Ollama `num_ctx`). Mismatch is the #1 cause of "model hangs on big files" — surfaced via context-overflow detection in `callLLM` error parsing.
+- **Local**: LM Studio/Ollama/Xinference at configurable URL (default `http://172.16.33.12:9997`). `/v1/chat/completions` for inference, `/v1/models` for discovery (with `context_length` extraction).
+- **Shared settings**: `contextWindow` (4K–256K), `maxTokens` (256–16384, default 4096), `temperature` (0–2, default 0.3). All sent to API except `contextWindow`.
 
 ### localStorage Keys
 
 | Key | Content |
 |-----|---------|
-| `codesentinel_settings` | API config, mode, model, temperature, maxTokens, contextWindow, requestTimeoutSec |
+| `codesentinel_settings` | API config, mode, model, temperature, maxTokens, contextWindow |
 | `codesentinel_prompts` | User-customized prompts matrix (including contextContent, language) |
 | `codesentinel_history` | Past analysis sessions (max 50) |
 | `codesentinel_sidebar_collapsed` | Sidebar visibility state |
@@ -119,9 +116,9 @@ CSS custom properties in `:root`. Key tokens:
 
 - **Fully autonomous**: no external CDN, fonts, or libraries. Must work in air-gapped corporate networks (КСПД).
 - **No build step**: pure HTML5 + CSS3 + Vanilla JS (ES6+). Opens directly in browser from filesystem.
-- **Browser compatibility**: `AbortSignal.timeout()` and `AbortSignal.any()` wrapped in polyfills (`_createTimeoutSignal`, `_combineSignals`); no inline `onclick` handlers (event delegation instead).
+- **Browser compatibility**: `AbortSignal.timeout()` wrapped in polyfill; no inline `onclick` handlers (event delegation instead).
 - **Russian UI**: all labels, prompts, messages in Russian. Respond to user in Russian.
-- **File attachments**: only `.txt`, `.md`, `.markdown`. Max 500KB. Binary rejected via heuristic check. Extension validated in JS before reading. Note: 500KB of code ≈ up to 125K tokens — usually too big for local models; the pre-flight check is what protects users, not the file size limit.
+- **File attachments**: only `.txt`, `.md`, `.markdown`. Max 500KB. Binary rejected via heuristic check. Extension validated in JS before reading.
 - **Copy buttons**: every AI response has copy-to-clipboard; code blocks inside responses have their own copy button (bound via event delegation).
 - **No inline event handlers**: use `addEventListener` or event delegation (`bindCodeCopyDelegation()`).
 

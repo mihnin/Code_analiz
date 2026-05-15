@@ -797,7 +797,8 @@ class AppState {
             localModel: '',
             temperature: 0.3,
             maxTokens: 4096,
-            contextWindow: 65536
+            contextWindow: 65536,
+            requestTimeoutSec: 300
         };
 
         // Prompts
@@ -938,12 +939,51 @@ class LLMService {
             max_tokens: this.state.settings.maxTokens
         };
 
-        const response = await fetch(config.url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body),
-            signal: abortSignal
-        });
+        // Таймаут только на ожидание ПЕРВОГО ЧАНКА (TTFB). После старта стрима — сбрасывается.
+        const timeoutSec = this.state.settings.requestTimeoutSec || 300;
+        const timeoutController = new AbortController();
+        let timeoutFired = false;
+        const timeoutId = setTimeout(() => {
+            timeoutFired = true;
+            timeoutController.abort();
+        }, timeoutSec * 1000);
+        const clearTtfbTimeout = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+        };
+        const combinedSignal = LLMService._combineSignals(abortSignal, timeoutController.signal);
+
+        let response;
+        try {
+            response = await fetch(config.url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body),
+                signal: combinedSignal
+            });
+        } catch (err) {
+            clearTtfbTimeout();
+            if (err.name === 'AbortError') {
+                // Различаем пользовательский abort vs таймаут
+                if (timeoutFired) {
+                    const isLocal = this.state.settings.mode === 'local';
+                    const hint = isLocal
+                        ? ` Возможные причины: модель не загружена в Xinference/LM Studio, превышен n_ctx сервера, либо сервер обрабатывает слишком большой запрос. Проверьте лог Xinference и уменьшите объём кода.`
+                        : ` Возможные причины: сетевая задержка или перегрузка API. Попробуйте повторить запрос.`;
+                    throw new Error(`Таймаут ответа модели (${timeoutSec} сек).${hint}`);
+                }
+                throw err;
+            }
+            // Сетевые ошибки (CORS, DNS, ECONNREFUSED) — fetch выбрасывает TypeError "Failed to fetch"
+            if (err instanceof TypeError) {
+                const isLocal = this.state.settings.mode === 'local';
+                const target = isLocal ? config.url : 'облачный API';
+                throw new Error(`Не удалось подключиться к ${target}. Проверьте: сервер запущен, адрес правильный, сеть/CORS разрешает запрос.`);
+            }
+            throw err;
+        }
+
+        // Headers получены — таймер ожидания первого чанка больше не нужен.
+        clearTtfbTimeout();
 
         if (!response.ok) {
             const errText = await response.text().catch(() => '');
@@ -952,6 +992,15 @@ class LLMService {
                 const errJson = JSON.parse(errText);
                 detail = errJson.error?.message || errJson.message || errText;
             } catch { detail = errText; }
+
+            // Специальная подсказка для типичных ошибок переполнения контекста
+            const lowered = (detail || '').toLowerCase();
+            const overflowHints = ['context length', 'context_length', 'max_position', 'n_ctx', 'maximum context', 'too long', 'token limit', 'context window'];
+            const isOverflow = overflowHints.some(h => lowered.includes(h));
+            if (isOverflow) {
+                throw new Error(`Превышен контекст модели на сервере. ${detail || ''} → Уменьшите объём кода, либо увеличьте окно контекста при загрузке модели в Xinference/LM Studio/Ollama.`);
+            }
+
             throw new Error(`API Error ${response.status}: ${detail || response.statusText}`);
         }
 
@@ -1003,6 +1052,21 @@ class LLMService {
         }
         const controller = new AbortController();
         setTimeout(() => controller.abort(), ms);
+        return controller.signal;
+    }
+
+    static _combineSignals(...signals) {
+        const filtered = signals.filter(Boolean);
+        if (filtered.length === 0) return undefined;
+        if (filtered.length === 1) return filtered[0];
+        if (typeof AbortSignal.any === 'function') {
+            return AbortSignal.any(filtered);
+        }
+        const controller = new AbortController();
+        for (const s of filtered) {
+            if (s.aborted) { controller.abort(s.reason); break; }
+            s.addEventListener('abort', () => controller.abort(s.reason), { once: true });
+        }
         return controller.signal;
     }
 
@@ -1918,6 +1982,26 @@ class Application {
             this.state.attachedFileContent
         );
 
+        // Pre-flight проверка бюджета токенов. Считаем не на глазок, а по реальным messages.
+        const estimatedTokens = messages.reduce((sum, m) => sum + TokenEstimator.estimate(m.content || ''), 0);
+        const ctx = this.state.settings.contextWindow || 0;
+        const reserved = this.state.settings.maxTokens || 0;
+        const budget = Math.max(0, ctx - reserved);
+
+        if (ctx > 0 && estimatedTokens > budget) {
+            const used = TokenEstimator.formatCount(estimatedTokens);
+            const ctxLabel = TokenEstimator.formatCount(ctx);
+            const reservedLabel = TokenEstimator.formatCount(reserved);
+            const isLocal = this.state.settings.mode === 'local';
+            const serverHint = isLocal
+                ? `\n\nДля локальных моделей: значение «Окно контекста» в настройках должно совпадать с n_ctx модели в Xinference/LM Studio/Ollama. Если модель в сервере загружена с меньшим контекстом — увеличьте его при перезапуске модели.`
+                : '';
+            const msg = `Запрос ~${used} токенов превышает доступный бюджет (${ctxLabel} контекст − ${reservedLabel} резерв ответа).\n\nУменьшите код/файл контекста или увеличьте «Окно контекста» в настройках.${serverHint}\n\nПродолжить отправку всё равно?`;
+            if (!confirm(msg)) {
+                return;
+            }
+        }
+
         // Store conversation history for follow-ups
         this.state.conversationHistory = [...messages];
 
@@ -2123,6 +2207,14 @@ class Application {
             document.getElementById('context-window-value').textContent = label;
         });
 
+        const timeoutInput = document.getElementById('setting-request-timeout');
+        if (timeoutInput) {
+            timeoutInput.addEventListener('input', () => {
+                const label = document.getElementById('request-timeout-value');
+                if (label) label.textContent = timeoutInput.value;
+            });
+        }
+
         // Toggle password visibility
         document.querySelectorAll('.toggle-password').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -2187,6 +2279,8 @@ class Application {
         document.getElementById('max-tokens-value').textContent = tokensSlider.value;
         const ctxVal = parseInt(ctxSelect.value);
         document.getElementById('context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
+        const timeoutEl = document.getElementById('setting-request-timeout');
+        if (timeoutEl) timeoutEl.value = s.requestTimeoutSec ?? 300;
 
         // Set toggle state
         const mode = s.mode || 'cloud';
@@ -2216,6 +2310,11 @@ class Application {
         this.state.settings.temperature = parseFloat(document.getElementById('setting-temperature').value) || 0.3;
         this.state.settings.maxTokens = parseInt(document.getElementById('setting-max-tokens').value) || 4096;
         this.state.settings.contextWindow = parseInt(document.getElementById('setting-context-window').value) || 65536;
+        const timeoutEl = document.getElementById('setting-request-timeout');
+        if (timeoutEl) {
+            const t = parseInt(timeoutEl.value);
+            this.state.settings.requestTimeoutSec = (isNaN(t) || t < 30) ? 300 : Math.min(t, 1800);
+        }
         this.state.saveSettings();
         this.updateTokenMeter();
         this.updateConnectionStatus();

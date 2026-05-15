@@ -14,7 +14,9 @@
       "Bash(powershell -Command \"Remove-Item ''AI_приложение.zip'' -Force; Compress-Archive -Path index.html, styles.css, app.js, logo.png -DestinationPath ''AI_приложение.zip''\")",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python3:*)",
+      "Bash(npm install:*)"
     ]
   }
 }
