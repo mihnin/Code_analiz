@@ -334,6 +334,13 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                                             <svg class="icon"><use href="#i-eye-off"/></svg>
                                         </button>
                                     </div>
+                                    <label for="setting-key-session-only" style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:#94a3b8;cursor:pointer">
+                                        <input type="checkbox" id="setting-key-session-only">
+                                        <span>Не сохранять ключ на диск (только в текущую сессию)</span>
+                                    </label>
+                                    <div class="range-labels">
+                                        <span style="color:#f59e0b;font-size:11px">⚠ По умолчанию ключ сохраняется в <code>localStorage</code> в открытом виде. Включите session-only, если работаете на чужом устройстве.</span>
+                                    </div>
                                 </div>
                                 <div class="form-group">
                                     <label>Модель DeepSeek</label>
@@ -1845,7 +1852,7 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                         </div>
                         <div style="display:flex;gap:8px;margin-top:12px">
                             <button id="admin-pwd-change" class="btn-primary btn-sm">Сменить пароль</button>
-                            <button id="admin-pwd-reset" class="btn-outline btn-sm">Сбросить к дефолтному (admin123)</button>
+                            <button id="admin-pwd-reset" class="btn-outline btn-sm">Сбросить к заводскому паролю</button>
                         </div>
                         <div id="admin-pwd-result" class="connection-result" style="margin-top:8px"></div>
                     </div>
