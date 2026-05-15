@@ -2138,7 +2138,22 @@ class Application {
                 `Сводка чанкования`
             );
 
-            // Сохраняем в history.
+            // Follow-up context: ТОЛЬКО system prompt + краткий маркер + assistant-ответы по чанкам.
+            // НЕ включаем полный код, НЕ включаем chunk user-messages — иначе следующий запрос
+            // моментально пробьёт контекст (это была HIGH-находка ревьюера).
+            // ВАЖНО: строим conversationHistory ДО addHistoryEntry, чтобы записать его в apiMessages
+            // и сохранить возможность follow-up после restoreFromHistory.
+            const compactHistory = [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Я загрузил большой файл (${codeLines} строк, ~${codeTokens} токенов), разбили на ${chunks.length} частей. Ниже — независимые результаты анализа каждой части. Используй их для ответа на мои уточняющие вопросы. Полный код в контексте недоступен — если для ответа нужен конкретный фрагмент, попроси меня его прислать отдельно.` },
+                ...allResults.map(r => ({
+                    role: 'assistant',
+                    content: `## Результаты части ${r.index}/${chunks.length}\n\n${r.content}`
+                }))
+            ];
+            this.state.conversationHistory = compactHistory;
+
+            // Сохраняем в history с реальным apiMessages (компактным, без full-code).
             try {
                 this.state.addHistoryEntry({
                     id: Date.now().toString(),
@@ -2147,7 +2162,7 @@ class Application {
                     language: this.state.selectedLang,
                     timestamp: new Date().toISOString(),
                     messages: this.state.chatMessages.slice(-Math.min(this.state.chatMessages.length, chunks.length * 2 + 1)),
-                    apiMessages: [],
+                    apiMessages: compactHistory,
                     codeSnippet: code.substring(0, 100)
                 });
                 this.renderHistory();
@@ -2155,17 +2170,6 @@ class Application {
                 Toast.show(saveErr.message, 'warning', 5000);
             }
 
-            // Follow-up context: ТОЛЬКО system prompt + краткий маркер + assistant-ответы по чанкам.
-            // НЕ включаем полный код, НЕ включаем chunk user-messages — иначе следующий запрос
-            // моментально пробьёт контекст (это была HIGH-находка ревьюера).
-            this.state.conversationHistory = [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Я загрузил большой файл (${codeLines} строк, ~${codeTokens} токенов), разбили на ${chunks.length} частей. Ниже — независимые результаты анализа каждой части. Используй их для ответа на мои уточняющие вопросы. Полный код в контексте недоступен — если для ответа нужен конкретный фрагмент, попроси меня его прислать отдельно.` },
-                ...allResults.map(r => ({
-                    role: 'assistant',
-                    content: `## Результаты части ${r.index}/${chunks.length}\n\n${r.content}`
-                }))
-            ];
             document.getElementById('chat-followup').disabled = false;
             document.getElementById('btn-send-followup').disabled = false;
         } finally {
