@@ -772,6 +772,47 @@ const LANGUAGES = {
 };
 
 /* ============================================================
+   SCHEMA VALIDATORS — защита от тампера/коррупции localStorage
+   ============================================================ */
+const Schema = {
+    string(v, def = '', maxLen = 100000) {
+        if (typeof v !== 'string') return def;
+        return v.length > maxLen ? v.substring(0, maxLen) : v;
+    },
+    number(v, def = 0, opts = {}) {
+        const n = typeof v === 'number' ? v : parseFloat(v);
+        if (!isFinite(n)) return def;
+        if (opts.min !== undefined && n < opts.min) return def;
+        if (opts.max !== undefined && n > opts.max) return def;
+        return n;
+    },
+    integer(v, def = 0, opts = {}) {
+        const n = Schema.number(v, NaN, opts);
+        return isFinite(n) ? Math.floor(n) : def;
+    },
+    boolean(v, def = false) {
+        if (typeof v === 'boolean') return v;
+        return def;
+    },
+    oneOf(v, allowed, def) {
+        return allowed.includes(v) ? v : def;
+    },
+    array(v, itemValidator) {
+        if (!Array.isArray(v)) return [];
+        return v.map(itemValidator).filter(x => x !== null && x !== undefined);
+    },
+    safeParse(raw, validator, def) {
+        if (raw === null || raw === undefined) return def;
+        try {
+            const parsed = JSON.parse(raw);
+            return validator(parsed);
+        } catch (e) {
+            return def;
+        }
+    }
+};
+
+/* ============================================================
    APPLICATION STATE
    ============================================================ */
 class AppState {
@@ -798,7 +839,9 @@ class AppState {
             temperature: 0.3,
             maxTokens: 4096,
             contextWindow: 65536,
-            requestTimeoutSec: 300
+            requestTimeoutSec: 300,
+            historyEnabled: true,
+            historyTTLDays: 30
         };
 
         // Prompts
@@ -811,31 +854,99 @@ class AppState {
     }
 
     loadFromStorage() {
-        try {
-            const saved = localStorage.getItem('codesentinel_settings');
-            if (saved) {
-                const parsed = JSON.parse(saved);
-                Object.assign(this.settings, parsed);
-            }
-        } catch (e) { /* ignore */ }
+        // Settings: каждое поле валидируется отдельно. Невалидные значения → дефолт.
+        const validSettings = Schema.safeParse(
+            localStorage.getItem('codesentinel_settings'),
+            (p) => {
+                if (!p || typeof p !== 'object') return null;
+                return {
+                    mode: Schema.oneOf(p.mode, ['cloud', 'local'], 'cloud'),
+                    cloudApiKey: Schema.string(p.cloudApiKey, '', 500),
+                    cloudModel: Schema.string(p.cloudModel, 'deepseek-chat', 100),
+                    cloudUrl: Schema.string(p.cloudUrl, 'https://api.deepseek.com', 500),
+                    localUrl: Schema.string(p.localUrl, 'http://172.16.33.12:9997', 500),
+                    localModel: Schema.string(p.localModel, '', 200),
+                    temperature: Schema.number(p.temperature, 0.3, { min: 0, max: 2 }),
+                    maxTokens: Schema.integer(p.maxTokens, 4096, { min: 256, max: 16384 }),
+                    contextWindow: Schema.integer(p.contextWindow, 65536, { min: 1024, max: 1048576 }),
+                    requestTimeoutSec: Schema.integer(p.requestTimeoutSec, 300, { min: 30, max: 1800 }),
+                    historyEnabled: Schema.boolean(p.historyEnabled, true),
+                    historyTTLDays: Schema.integer(p.historyTTLDays, 30, { min: 0, max: 365 })
+                };
+            },
+            null
+        );
+        if (validSettings) Object.assign(this.settings, validSettings);
 
-        try {
-            const saved = localStorage.getItem('codesentinel_prompts');
-            if (saved) {
-                this.prompts = JSON.parse(saved);
-            }
-        } catch (e) { /* ignore */ }
+        // Prompts: массив объектов с обязательными полями id/role/actionName/systemPrompt.
+        this.prompts = Schema.safeParse(
+            localStorage.getItem('codesentinel_prompts'),
+            (p) => Schema.array(p, item => {
+                if (!item || typeof item !== 'object') return null;
+                const id = Schema.string(item.id, '', 100);
+                const role = Schema.oneOf(item.role, ['infosec', 'consultant', 'developer'], null);
+                const actionName = Schema.string(item.actionName, '', 200);
+                const systemPrompt = Schema.string(item.systemPrompt, '', 200000);
+                if (!id || !role || !actionName || !systemPrompt) return null;
+                return {
+                    id, role, actionName, systemPrompt,
+                    language: item.language ? Schema.string(item.language, '', 50) : undefined,
+                    contextContent: Schema.string(item.contextContent, '', 500000),
+                    contextFile: Schema.string(item.contextFile, '', 300)
+                };
+            }),
+            []
+        );
 
         if (this.prompts.length === 0) {
             this.prompts = JSON.parse(JSON.stringify(DEFAULT_PROMPTS));
         }
 
-        try {
-            const saved = localStorage.getItem('codesentinel_history');
-            if (saved) {
-                this.history = JSON.parse(saved);
-            }
-        } catch (e) { /* ignore */ }
+        // History: с TTL-фильтрацией старых записей по historyTTLDays (0 = без TTL).
+        const rawHistory = Schema.safeParse(
+            localStorage.getItem('codesentinel_history'),
+            (p) => Schema.array(p, item => {
+                if (!item || typeof item !== 'object') return null;
+                const id = Schema.string(item.id, '', 100);
+                if (!id) return null;
+                return {
+                    id,
+                    role: Schema.oneOf(item.role, ['infosec', 'consultant', 'developer'], 'developer'),
+                    action: Schema.string(item.action, '', 200),
+                    language: Schema.string(item.language, '', 50),
+                    timestamp: Schema.string(item.timestamp, new Date().toISOString(), 50),
+                    messages: Schema.array(item.messages, m => {
+                        if (!m || typeof m !== 'object') return null;
+                        return {
+                            role: Schema.oneOf(m.role, ['user', 'assistant'], 'user'),
+                            content: Schema.string(m.content, '', 1000000),
+                            meta: Schema.string(m.meta, '', 500),
+                            time: Schema.string(m.time, '', 50)
+                        };
+                    }),
+                    apiMessages: Array.isArray(item.apiMessages) ? Schema.array(item.apiMessages, m => {
+                        if (!m || typeof m !== 'object') return null;
+                        return {
+                            role: Schema.oneOf(m.role, ['system', 'user', 'assistant'], null),
+                            content: Schema.string(m.content, '', 1000000)
+                        };
+                    }).filter(x => x.role !== null) : [],
+                    codeSnippet: Schema.string(item.codeSnippet, '', 200)
+                };
+            }),
+            []
+        );
+        this.history = this._pruneExpiredHistory(rawHistory);
+    }
+
+    _pruneExpiredHistory(history) {
+        const ttlDays = this.settings.historyTTLDays;
+        if (!ttlDays || ttlDays <= 0) return history;
+        const cutoffMs = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+        return history.filter(e => {
+            const t = Date.parse(e.timestamp);
+            return isNaN(t) || t >= cutoffMs;
+        });
     }
 
     saveSettings() {
@@ -863,6 +974,7 @@ class AppState {
     }
 
     addHistoryEntry(entry) {
+        if (this.settings.historyEnabled === false) return; // privacy: opt-out
         this.history.unshift(entry);
         if (this.history.length > 50) this.history.pop();
         this.saveHistory();
@@ -1679,12 +1791,25 @@ class Application {
     }
 
     bindTokenMeter() {
-        // Toggle details on click
+        // Toggle details on click + keyboard (a11y).
         const meter = document.querySelector('.token-meter');
         const details = document.getElementById('token-details');
-        meter.addEventListener('click', (e) => {
+        meter.setAttribute('role', 'button');
+        meter.setAttribute('tabindex', '0');
+        meter.setAttribute('aria-expanded', 'false');
+        meter.setAttribute('aria-controls', 'token-details');
+        const toggle = (e) => {
             if (e.target.closest('.btn-analyze')) return;
-            details.style.display = details.style.display === 'none' ? 'block' : 'none';
+            const visible = details.style.display !== 'none';
+            details.style.display = visible ? 'none' : 'block';
+            meter.setAttribute('aria-expanded', String(!visible));
+        };
+        meter.addEventListener('click', toggle);
+        meter.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggle(e);
+            }
         });
 
         // Update token meter when action changes
@@ -1907,12 +2032,23 @@ class Application {
     bindReasoningToggle(div) {
         const header = div.querySelector('.reasoning-header');
         if (!header) return;
-        header.addEventListener('click', () => {
+        header.setAttribute('role', 'button');
+        header.setAttribute('tabindex', '0');
+        header.setAttribute('aria-expanded', 'false');
+        const action = () => {
             const content = div.querySelector('.reasoning-content');
             const toggle = div.querySelector('.reasoning-toggle');
             const isVisible = content.style.display !== 'none';
             content.style.display = isVisible ? 'none' : 'block';
             toggle.textContent = isVisible ? 'Показать' : 'Скрыть';
+            header.setAttribute('aria-expanded', String(!isVisible));
+        };
+        header.addEventListener('click', action);
+        header.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                action();
+            }
         });
     }
 
@@ -1956,9 +2092,9 @@ class Application {
                 <h3>AI сканер</h3>
                 <p>Вставьте исходный код, ТЗ или функциональную спецификацию, выберите роль и действие</p>
                 <div class="welcome-hints">
-                    <div class="hint-card" data-role="infosec"><svg class="icon"><use href="#i-security"/></svg><span>ИБ-аудит</span></div>
-                    <div class="hint-card" data-role="consultant"><svg class="icon"><use href="#i-consultant"/></svg><span>Консалтинг</span></div>
-                    <div class="hint-card" data-role="developer"><svg class="icon"><use href="#i-developer"/></svg><span>Разработка</span></div>
+                    <button type="button" class="hint-card" data-role="infosec"><svg class="icon"><use href="#i-security"/></svg><span>ИБ-аудит</span></button>
+                    <button type="button" class="hint-card" data-role="consultant"><svg class="icon"><use href="#i-consultant"/></svg><span>Консалтинг</span></button>
+                    <button type="button" class="hint-card" data-role="developer"><svg class="icon"><use href="#i-developer"/></svg><span>Разработка</span></button>
                 </div>
             </div>
         `;
@@ -2309,6 +2445,26 @@ class Application {
         document.getElementById('btn-add-prompt').addEventListener('click', () => {
             this.openPromptModal(null);
         });
+
+        // Privacy: history toggle + TTL + purge button.
+        const historyTTL = document.getElementById('setting-history-ttl');
+        if (historyTTL) {
+            historyTTL.addEventListener('change', (e) => {
+                const v = parseInt(e.target.value) || 0;
+                const label = document.getElementById('history-ttl-value');
+                if (label) label.textContent = v === 0 ? 'Никогда' : `${v} дн.`;
+            });
+        }
+        const purgeBtn = document.getElementById('btn-purge-history-now');
+        if (purgeBtn) {
+            purgeBtn.addEventListener('click', () => {
+                if (!confirm('Удалить всю историю анализов? Это действие необратимо.')) return;
+                this.state.history = [];
+                this.state.saveHistory();
+                this.renderHistory();
+                Toast.show('История очищена');
+            });
+        }
     }
 
     renderSettingsForm() {
@@ -2339,6 +2495,17 @@ class Application {
         document.getElementById('context-window-value').textContent = ctxVal >= 1024 ? (ctxVal / 1024) + 'K' : ctxVal;
         const timeoutEl = document.getElementById('setting-request-timeout');
         if (timeoutEl) timeoutEl.value = s.requestTimeoutSec ?? 300;
+
+        // Privacy: history toggle + TTL.
+        const histToggle = document.getElementById('setting-history-enabled');
+        if (histToggle) histToggle.checked = s.historyEnabled !== false;
+        const histTTL = document.getElementById('setting-history-ttl');
+        if (histTTL) {
+            histTTL.value = String(s.historyTTLDays ?? 30);
+            const v = parseInt(histTTL.value) || 0;
+            const ttlLabel = document.getElementById('history-ttl-value');
+            if (ttlLabel) ttlLabel.textContent = v === 0 ? 'Никогда' : `${v} дн.`;
+        }
 
         // Set toggle state
         const mode = s.mode || 'cloud';
@@ -2372,6 +2539,13 @@ class Application {
         if (timeoutEl) {
             const t = parseInt(timeoutEl.value);
             this.state.settings.requestTimeoutSec = (isNaN(t) || t < 30) ? 300 : Math.min(t, 1800);
+        }
+        const histToggleEl = document.getElementById('setting-history-enabled');
+        if (histToggleEl) this.state.settings.historyEnabled = !!histToggleEl.checked;
+        const histTTLEl = document.getElementById('setting-history-ttl');
+        if (histTTLEl) {
+            const t = parseInt(histTTLEl.value);
+            this.state.settings.historyTTLDays = isNaN(t) ? 30 : Math.max(0, Math.min(t, 365));
         }
         this.state.saveSettings();
         this.updateTokenMeter();
@@ -2608,6 +2782,56 @@ class Application {
         Toast.show('Промпт удалён');
     }
 
+    /* ------ Modal a11y helpers (focus trap, ARIA, Escape) ------ */
+    _modalFocusableSelector() {
+        return 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    }
+
+    _openModal(overlayId, opts = {}) {
+        const overlay = document.getElementById(overlayId);
+        if (!overlay) return;
+        overlay._previousFocus = document.activeElement;
+        overlay.style.display = 'flex';
+        overlay.setAttribute('aria-hidden', 'false');
+
+        const focusables = overlay.querySelectorAll(this._modalFocusableSelector());
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+
+        // Focus first focusable элемент (или явно указанный)
+        const initialFocus = opts.initialFocusId ? overlay.querySelector('#' + opts.initialFocusId) : first;
+        if (initialFocus) setTimeout(() => initialFocus.focus(), 30);
+
+        // Focus trap через Tab/Shift+Tab.
+        overlay._trapHandler = (e) => {
+            if (e.key !== 'Tab') return;
+            if (focusables.length === 0) { e.preventDefault(); return; }
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        };
+        overlay.addEventListener('keydown', overlay._trapHandler);
+    }
+
+    _closeModal(overlayId) {
+        const overlay = document.getElementById(overlayId);
+        if (!overlay) return;
+        overlay.style.display = 'none';
+        overlay.setAttribute('aria-hidden', 'true');
+        if (overlay._trapHandler) {
+            overlay.removeEventListener('keydown', overlay._trapHandler);
+            overlay._trapHandler = null;
+        }
+        if (overlay._previousFocus && typeof overlay._previousFocus.focus === 'function') {
+            overlay._previousFocus.focus();
+            overlay._previousFocus = null;
+        }
+    }
+
     /* ------ Prompt Modal ------ */
     bindModals() {
         document.getElementById('btn-modal-close').addEventListener('click', () => this.closePromptModal());
@@ -2718,11 +2942,11 @@ class Application {
         }
         document.getElementById('modal-context-file').value = '';
 
-        modal.style.display = 'flex';
+        this._openModal('modal-overlay', { initialFocusId: 'modal-action' });
     }
 
     closePromptModal() {
-        document.getElementById('modal-overlay').style.display = 'none';
+        this._closeModal('modal-overlay');
         this.editingPromptId = null;
         this._modalContextFile = '';
         this._modalContextContent = '';
@@ -2889,11 +3113,11 @@ class Application {
             container.appendChild(div);
         });
 
-        document.getElementById('history-modal-overlay').style.display = 'flex';
+        this._openModal('history-modal-overlay');
     }
 
     closeHistoryModal() {
-        document.getElementById('history-modal-overlay').style.display = 'none';
+        this._closeModal('history-modal-overlay');
         this._viewingHistoryId = null;
     }
 
@@ -2973,7 +3197,7 @@ class Application {
                 // Admin auth overlay — проверяем первым
                 const adminOverlay = document.getElementById('admin-auth-overlay');
                 if (adminOverlay && adminOverlay.style.display !== 'none') {
-                    adminOverlay.style.display = 'none';
+                    this._closeModal('admin-auth-overlay');
                     const pwInput = document.getElementById('admin-password-input');
                     if (pwInput) pwInput.value = '';
                     const pwErr = document.getElementById('admin-auth-error');
@@ -3047,8 +3271,46 @@ class Application {
 
 /* ============================================================
    ADMIN CONSTANTS
+   ВНИМАНИЕ: это UI-gate, не реальная аутентификация. Любой пользователь
+   с доступом к DevTools может обойти проверку. Реальная защита возможна
+   только при наличии бэкенда. Хешируем пароль, чтобы убрать строку из
+   исходника, но это не security boundary.
    ============================================================ */
-const ADMIN_PASSWORD = 'admin123';
+const ADMIN_PASSWORD_SALT = 'codesentinel/v1/admin-gate/2025';
+// SHA-256 хеш от ('admin123' + ADMIN_PASSWORD_SALT). Можно сменить через UI.
+const ADMIN_DEFAULT_PASSWORD_HASH = 'd67de7e7a4af627059b8491cda964dbd262ec446c801123de25c48165c211cb3';
+const ADMIN_PASSWORD_HASH_KEY = 'codesentinel_admin_pwd_hash';
+
+async function _sha256Hex(input) {
+    if (!crypto?.subtle?.digest) {
+        // Fallback: без SubtleCrypto не можем хешировать. Возвращаем raw — gate деградирует
+        // в plaintext-сравнение, что не хуже исходного варианта.
+        return 'plain:' + input;
+    }
+    const data = new TextEncoder().encode(input);
+    const buf = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function _hashAdminPassword(password) {
+    return _sha256Hex(password + ADMIN_PASSWORD_SALT);
+}
+
+async function _verifyAdminPassword(password) {
+    if (typeof password !== 'string' || password.length === 0 || password.length > 200) return false;
+    const storedHash = localStorage.getItem(ADMIN_PASSWORD_HASH_KEY);
+
+    // Fallback на старых браузерах без crypto.subtle: разрешаем только дефолтный
+    // пароль и только если пользователь не менял его. Иначе — отказываем (безопаснее).
+    if (!crypto?.subtle?.digest) {
+        if (storedHash) return false;
+        return password === 'admin123';
+    }
+
+    const expected = storedHash || ADMIN_DEFAULT_PASSWORD_HASH;
+    const actual = await _hashAdminPassword(password);
+    return actual === expected;
+}
 
 const DEFAULT_SUPPORT_SYSTEM_PROMPT = `Ты — виртуальный ассистент первой линии технической поддержки группы УПФЭ. Твоя задача — помочь пользователям разобраться в работе приложения "AI сканер".
 
@@ -3151,11 +3413,27 @@ class AdminManager {
             systemPrompt: DEFAULT_SUPPORT_SYSTEM_PROMPT,
             welcomeMessage: DEFAULT_SUPPORT_WELCOME
         };
-        try {
-            const saved = localStorage.getItem('codesentinel_admin_settings');
-            if (saved) return Object.assign({}, defaults, JSON.parse(saved));
-        } catch (e) { /* ignore */ }
-        return defaults;
+        const parsed = Schema.safeParse(
+            localStorage.getItem('codesentinel_admin_settings'),
+            (p) => {
+                if (!p || typeof p !== 'object') return null;
+                return {
+                    mode: Schema.oneOf(p.mode, ['cloud', 'local'], defaults.mode),
+                    cloudApiKey: Schema.string(p.cloudApiKey, defaults.cloudApiKey, 500),
+                    cloudModel: Schema.string(p.cloudModel, defaults.cloudModel, 100),
+                    cloudUrl: Schema.string(p.cloudUrl, defaults.cloudUrl, 500),
+                    localUrl: Schema.string(p.localUrl, defaults.localUrl, 500),
+                    localModel: Schema.string(p.localModel, defaults.localModel, 200),
+                    temperature: Schema.number(p.temperature, defaults.temperature, { min: 0, max: 2 }),
+                    maxTokens: Schema.integer(p.maxTokens, defaults.maxTokens, { min: 64, max: 16384 }),
+                    contextWindow: Schema.integer(p.contextWindow, defaults.contextWindow, { min: 1024, max: 1048576 }),
+                    systemPrompt: Schema.string(p.systemPrompt, defaults.systemPrompt, 200000),
+                    welcomeMessage: Schema.string(p.welcomeMessage, defaults.welcomeMessage, 50000)
+                };
+            },
+            null
+        );
+        return parsed || defaults;
     }
 
     saveSettings() {
@@ -3175,43 +3453,45 @@ class AdminManager {
         const input = document.getElementById('admin-password-input');
         const errorEl = document.getElementById('admin-auth-error');
 
-        const submit = () => {
+        const closeAuth = () => {
+            this.app._closeModal('admin-auth-overlay');
+            input.value = '';
+            errorEl.style.display = 'none';
+        };
+
+        const submit = async () => {
             const val = input.value;
-            if (val === ADMIN_PASSWORD) {
-                this.isAuthenticated = true;
-                overlay.style.display = 'none';
-                input.value = '';
-                errorEl.style.display = 'none';
-                this.app.navigateTo('admin'); // _renderForm() вызывается внутри overridden navigateTo
-            } else {
-                errorEl.style.display = 'flex';
-                input.value = '';
-                input.focus();
+            // Защита от двойного клика во время async-проверки.
+            if (submitBtn.disabled) return;
+            submitBtn.disabled = true;
+            try {
+                const ok = await _verifyAdminPassword(val);
+                if (ok) {
+                    this.isAuthenticated = true;
+                    closeAuth();
+                    this.app.navigateTo('admin');
+                } else {
+                    errorEl.style.display = 'flex';
+                    input.value = '';
+                    input.focus();
+                }
+            } finally {
+                submitBtn.disabled = false;
             }
         };
 
         submitBtn.addEventListener('click', submit);
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
-        cancelBtn.addEventListener('click', () => {
-            overlay.style.display = 'none';
-            input.value = '';
-            errorEl.style.display = 'none';
-        });
+        cancelBtn.addEventListener('click', closeAuth);
 
         overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) {
-                overlay.style.display = 'none';
-                input.value = '';
-                errorEl.style.display = 'none';
-            }
+            if (e.target === overlay) closeAuth();
         });
     }
 
     showPasswordModal() {
-        const overlay = document.getElementById('admin-auth-overlay');
-        overlay.style.display = 'flex';
-        setTimeout(() => document.getElementById('admin-password-input').focus(), 50);
+        this.app._openModal('admin-auth-overlay', { initialFocusId: 'admin-password-input' });
     }
 
     _renderForm() {
@@ -3337,6 +3617,56 @@ class AdminManager {
             document.getElementById('admin-welcome-message').value = DEFAULT_SUPPORT_WELCOME;
             Toast.show('Промпт сброшен к значению по умолчанию');
         });
+
+        // Admin password change.
+        const pwResultEl = document.getElementById('admin-pwd-result');
+        const showPwResult = (text, isError = false) => {
+            if (!pwResultEl) return;
+            pwResultEl.textContent = text;
+            pwResultEl.className = 'connection-result ' + (isError ? 'error' : 'success');
+        };
+        const pwChangeBtn = document.getElementById('admin-pwd-change');
+        if (pwChangeBtn) {
+            pwChangeBtn.addEventListener('click', async () => {
+                const cur = document.getElementById('admin-pwd-current').value;
+                const fresh = document.getElementById('admin-pwd-new').value;
+                const conf = document.getElementById('admin-pwd-confirm').value;
+                if (fresh.length < 4) {
+                    showPwResult('Новый пароль должен быть не короче 4 символов', true);
+                    return;
+                }
+                if (fresh !== conf) {
+                    showPwResult('Подтверждение не совпадает с новым паролем', true);
+                    return;
+                }
+                pwChangeBtn.disabled = true;
+                try {
+                    const ok = await _verifyAdminPassword(cur);
+                    if (!ok) {
+                        showPwResult('Неверный текущий пароль', true);
+                        return;
+                    }
+                    const hash = await _hashAdminPassword(fresh);
+                    localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, hash);
+                    document.getElementById('admin-pwd-current').value = '';
+                    document.getElementById('admin-pwd-new').value = '';
+                    document.getElementById('admin-pwd-confirm').value = '';
+                    showPwResult('Пароль изменён', false);
+                    Toast.show('Пароль администратора изменён');
+                } finally {
+                    pwChangeBtn.disabled = false;
+                }
+            });
+        }
+        const pwResetBtn = document.getElementById('admin-pwd-reset');
+        if (pwResetBtn) {
+            pwResetBtn.addEventListener('click', () => {
+                if (!confirm('Сбросить пароль к дефолтному "admin123"?')) return;
+                localStorage.removeItem(ADMIN_PASSWORD_HASH_KEY);
+                showPwResult('Пароль сброшен к дефолтному', false);
+                Toast.show('Пароль сброшен');
+            });
+        }
 
         // Fetch local models
         document.getElementById('admin-btn-fetch-models').addEventListener('click', () => {
