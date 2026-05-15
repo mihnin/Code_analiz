@@ -939,17 +939,24 @@ class LLMService {
             max_tokens: this.state.settings.maxTokens
         };
 
-        // Таймаут только на ожидание ПЕРВОГО ЧАНКА (TTFB). После старта стрима — сбрасывается.
+        // Один и тот же таймаут используется и как TTFB (до первого data:), и как idle-timeout
+        // между чанками: если в течение N секунд от модели нет данных — abort.
         const timeoutSec = this.state.settings.requestTimeoutSec || 300;
         const timeoutController = new AbortController();
         let timeoutFired = false;
-        const timeoutId = setTimeout(() => {
-            timeoutFired = true;
-            timeoutController.abort();
-        }, timeoutSec * 1000);
-        const clearTtfbTimeout = () => {
+        let firstDataReceived = false;
+        let timeoutId = null;
+        const armTimeout = () => {
             if (timeoutId) clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+                timeoutFired = true;
+                timeoutController.abort();
+            }, timeoutSec * 1000);
         };
+        const clearTtfbTimeout = () => {
+            if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+        };
+        armTimeout();
         const combinedSignal = LLMService._combineSignals(abortSignal, timeoutController.signal);
 
         let response;
@@ -982,10 +989,11 @@ class LLMService {
             throw err;
         }
 
-        // Headers получены — таймер ожидания первого чанка больше не нужен.
-        clearTtfbTimeout();
+        // Headers получены, но для SSE это ещё не означает первый чанк данных — сервер мог
+        // открыть stream и молчать. TTFB-таймер сбрасываем ниже, при первой реальной data:-строке.
 
         if (!response.ok) {
+            clearTtfbTimeout();
             const errText = await response.text().catch(() => '');
             let detail = '';
             try {
@@ -1010,37 +1018,65 @@ class LLMService {
         let fullContent = '';
         let fullReasoning = '';
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
 
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith('data:')) continue;
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed || !trimmed.startsWith('data:')) continue;
 
-                const data = trimmed.slice(5).trim();
-                if (data === '[DONE]') continue;
+                    // Любая data:-строка от сервера: сбрасываем флаг первого чанка и переармируем idle-таймер.
+                    if (!firstDataReceived) firstDataReceived = true;
+                    armTimeout();
 
-                try {
-                    const parsed = JSON.parse(data);
-                    const delta = parsed.choices?.[0]?.delta;
-                    if (!delta) continue;
+                    const data = trimmed.slice(5).trim();
+                    if (data === '[DONE]') continue;
 
-                    const reasoningDelta = delta.reasoning_content || delta.reasoning || null;
-                    const contentDelta = delta.content || null;
+                    try {
+                        const parsed = JSON.parse(data);
+                        const delta = parsed.choices?.[0]?.delta;
+                        if (!delta) continue;
 
-                    if (reasoningDelta) fullReasoning += reasoningDelta;
-                    if (contentDelta) fullContent += contentDelta;
+                        const reasoningDelta = delta.reasoning_content || delta.reasoning || null;
+                        const contentDelta = delta.content || null;
 
-                    if (reasoningDelta || contentDelta) {
-                        onChunk({ contentDelta, reasoningDelta, fullContent, fullReasoning });
-                    }
-                } catch { /* skip malformed chunks */ }
+                        if (reasoningDelta) fullReasoning += reasoningDelta;
+                        if (contentDelta) fullContent += contentDelta;
+
+                        if (reasoningDelta || contentDelta) {
+                            onChunk({ contentDelta, reasoningDelta, fullContent, fullReasoning });
+                        }
+                    } catch { /* skip malformed chunks */ }
+                }
             }
+        } catch (err) {
+            // Различаем три случая abort'а из reader.read():
+            // 1) Таймер сработал ДО первого чанка — TTFB-таймаут.
+            // 2) Таймер сработал ПОСЛЕ первого чанка — idle-таймаут (модель замолчала).
+            // 3) Пользовательский Stop.
+            if (err.name === 'AbortError' && timeoutFired) {
+                const isLocal = this.state.settings.mode === 'local';
+                if (!firstDataReceived) {
+                    const hint = isLocal
+                        ? ` Сервер открыл стрим, но не прислал ни одного чанка за ${timeoutSec} сек. Возможные причины: модель зависла на промпте, GPU/CPU перегружены. Проверьте лог Xinference.`
+                        : ` Сервер открыл стрим, но не прислал данные за ${timeoutSec} сек.`;
+                    throw new Error(`Таймаут первого чанка (${timeoutSec} сек).${hint}`);
+                } else {
+                    const hint = isLocal
+                        ? ` Модель замолчала посреди генерации. Возможные причины: переполнение n_ctx во время вывода, OOM, сбой сервера. Частичный ответ сохранён.`
+                        : ` Соединение зависло посреди стрима.`;
+                    throw new Error(`Idle-таймаут стрима (${timeoutSec} сек без данных).${hint}`);
+                }
+            }
+            throw err;
+        } finally {
+            clearTtfbTimeout();
         }
 
         return { content: fullContent, reasoning: fullReasoning };
@@ -1228,8 +1264,10 @@ class MarkdownRenderer {
     }
 
     static escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        const s = typeof str === 'string' ? str : String(str);
         const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-        return str.replace(/[&<>"']/g, c => map[c]);
+        return s.replace(/[&<>"']/g, c => map[c]);
     }
 }
 
@@ -1275,11 +1313,27 @@ class Toast {
 
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        toast.innerHTML = `
-            <span class="toast-icon"><svg class="icon"><use href="${iconMap[type] || '#i-check'}"/></svg></span>
-            <span>${message}</span>
-        `;
 
+        // Иконка — собирается через DOM (createElementNS для SVG), без innerHTML.
+        const iconHref = iconMap[type] || '#i-check';
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+        const XLINK_NS = 'http://www.w3.org/1999/xlink';
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'toast-icon';
+        const svg = document.createElementNS(SVG_NS, 'svg');
+        svg.setAttribute('class', 'icon');
+        const useEl = document.createElementNS(SVG_NS, 'use');
+        useEl.setAttribute('href', iconHref);
+        useEl.setAttributeNS(XLINK_NS, 'xlink:href', iconHref);
+        svg.appendChild(useEl);
+        iconSpan.appendChild(svg);
+
+        // Сообщение — только через textContent, никакого HTML от внешних источников.
+        const msgSpan = document.createElement('span');
+        msgSpan.textContent = message === null || message === undefined ? '' : String(message);
+
+        toast.appendChild(iconSpan);
+        toast.appendChild(msgSpan);
         container.appendChild(toast);
 
         setTimeout(() => {
@@ -1642,10 +1696,11 @@ class Application {
         const container = document.getElementById('action-buttons');
         const prompts = this.state.getPromptsForRole(this.state.selectedRole, this.state.selectedLang);
 
+        const esc = MarkdownRenderer.escapeHtml;
         container.innerHTML = prompts.map(p => `
             <button class="action-btn ${this.state.selectedAction === p.id ? 'active' : ''}"
-                    data-action-id="${p.id}">
-                ${p.actionName}
+                    data-action-id="${esc(p.id)}">
+                ${esc(p.actionName)}
             </button>
         `).join('');
 
@@ -1691,21 +1746,22 @@ class Application {
         const avatarText = msg.role === 'user' ? 'Вы' : 'AI';
         const name = msg.role === 'user' ? 'Вы' : 'AI сканер';
 
-        const metaHtml = msg.meta ? `<span class="msg-meta">${msg.meta}</span>` : '';
+        const esc = MarkdownRenderer.escapeHtml;
+        const metaHtml = msg.meta ? `<span class="msg-meta">${esc(msg.meta)}</span>` : '';
         const copyBtn = msg.role === 'assistant'
             ? `<button class="btn-copy-msg" title="Скопировать ответ"><svg class="icon"><use href="#i-copy"/></svg></button>`
             : '';
 
         div.innerHTML = `
-            <div class="msg-avatar">${avatarText}</div>
+            <div class="msg-avatar">${esc(avatarText)}</div>
             <div class="msg-body">
                 <div class="msg-header">
-                    <span class="msg-name">${name}</span>
-                    <span class="msg-time">${msg.time}</span>
+                    <span class="msg-name">${esc(name)}</span>
+                    <span class="msg-time">${esc(msg.time)}</span>
                     ${metaHtml}
                     ${copyBtn}
                 </div>
-                <div class="msg-content">${msg.role === 'assistant' ? MarkdownRenderer.render(msg.content) : MarkdownRenderer.escapeHtml(msg.content)}</div>
+                <div class="msg-content">${msg.role === 'assistant' ? MarkdownRenderer.render(msg.content) : esc(msg.content)}</div>
             </div>
         `;
 
@@ -2038,6 +2094,8 @@ class Application {
                 language: this.state.selectedLang,
                 timestamp: new Date().toISOString(),
                 messages: this.state.chatMessages.slice(-2),
+                // Сохраняем conversationHistory для возможности продолжить диалог из истории.
+                apiMessages: [...this.state.conversationHistory],
                 codeSnippet: code.substring(0, 100)
             });
             this.renderHistory();
@@ -2483,33 +2541,37 @@ class Application {
         const tbody = document.getElementById('prompts-tbody');
         if (!tbody) return;
 
+        const esc = MarkdownRenderer.escapeHtml;
         tbody.innerHTML = this.state.prompts.map(p => {
             const role = ROLES[p.role] || ROLES.developer;
+            const langLabel = p.language ? (LANGUAGES[p.language] || p.language) : '';
+            // role.name / role.team / role.icon — из ROLES (внутренний справочник), p.role — ключ ROLES,
+            // но всё равно экранируем на случай тампера с localStorage.
             return `
-                <tr data-prompt-id="${p.id}">
+                <tr data-prompt-id="${esc(p.id)}">
                     <td>
                         <div class="table-role-cell">
-                            <div class="table-role-icon ${p.role}">
-                                <svg class="icon"><use href="#${role.icon}"/></svg>
+                            <div class="table-role-icon ${esc(p.role)}">
+                                <svg class="icon"><use href="#${esc(role.icon)}"/></svg>
                             </div>
                             <div>
-                                <div class="table-role-name">${role.name}</div>
-                                <div class="table-role-sub">${role.team}</div>
+                                <div class="table-role-name">${esc(role.name)}</div>
+                                <div class="table-role-sub">${esc(role.team)}</div>
                             </div>
                         </div>
                     </td>
-                    <td><span class="table-badge ${p.role}">${p.actionName}</span>${p.language ? ` <span class="label-badge">${LANGUAGES[p.language] || p.language}</span>` : ''}</td>
-                    <td><div class="table-prompt-text" title="${MarkdownRenderer.escapeHtml(p.systemPrompt)}">${MarkdownRenderer.escapeHtml(p.systemPrompt.substring(0, 150))}...</div></td>
+                    <td><span class="table-badge ${esc(p.role)}">${esc(p.actionName)}</span>${p.language ? ` <span class="label-badge">${esc(langLabel)}</span>` : ''}</td>
+                    <td><div class="table-prompt-text" title="${esc(p.systemPrompt)}">${esc((p.systemPrompt || '').substring(0, 150))}...</div></td>
                     <td>${p.contextFile
-                        ? `<span class="table-file-badge"><svg class="icon"><use href="#i-attach"/></svg>${MarkdownRenderer.escapeHtml(p.contextFile)}</span>`
+                        ? `<span class="table-file-badge"><svg class="icon"><use href="#i-attach"/></svg>${esc(p.contextFile)}</span>`
                         : '<span style="color:var(--text-muted)">—</span>'
                     }</td>
                     <td>
                         <div class="table-actions">
-                            <button class="table-action-btn edit" data-id="${p.id}" title="Редактировать">
+                            <button class="table-action-btn edit" data-id="${esc(p.id)}" title="Редактировать">
                                 <svg class="icon"><use href="#i-edit"/></svg>
                             </button>
-                            <button class="table-action-btn delete" data-id="${p.id}" title="Удалить">
+                            <button class="table-action-btn delete" data-id="${esc(p.id)}" title="Удалить">
                                 <svg class="icon"><use href="#i-delete"/></svg>
                             </button>
                         </div>
@@ -2733,6 +2795,7 @@ class Application {
             return;
         }
 
+        const esc = MarkdownRenderer.escapeHtml;
         container.innerHTML = this.state.history.map(entry => {
             const role = ROLES[entry.role] || ROLES.developer;
             const date = new Date(entry.timestamp);
@@ -2742,20 +2805,20 @@ class Application {
             const snippet = entry.codeSnippet ? entry.codeSnippet.substring(0, 60) + '...' : '';
 
             return `
-                <div class="history-item" data-history-id="${entry.id}">
-                    <div class="history-item-icon ${entry.role}">
-                        <svg class="icon"><use href="#${role.icon}"/></svg>
+                <div class="history-item" data-history-id="${esc(entry.id)}">
+                    <div class="history-item-icon ${esc(entry.role)}">
+                        <svg class="icon"><use href="#${esc(role.icon)}"/></svg>
                     </div>
                     <div class="history-item-body">
-                        <div class="history-item-title">${role.name} — ${entry.action}</div>
+                        <div class="history-item-title">${esc(role.name)} — ${esc(entry.action)}</div>
                         <div class="history-item-meta">
-                            <span>${lang}</span>
-                            <span>${dateStr} ${timeStr}</span>
-                            <span>${snippet}</span>
+                            <span>${esc(lang)}</span>
+                            <span>${esc(dateStr)} ${esc(timeStr)}</span>
+                            <span>${esc(snippet)}</span>
                         </div>
                     </div>
                     <div class="history-item-actions">
-                        <button class="table-action-btn delete history-delete-btn" data-id="${entry.id}" title="Удалить">
+                        <button class="table-action-btn delete history-delete-btn" data-id="${esc(entry.id)}" title="Удалить">
                             <svg class="icon"><use href="#i-delete"/></svg>
                         </button>
                     </div>
@@ -2810,15 +2873,16 @@ class Application {
                 ? `<button class="btn-copy-msg" title="Скопировать ответ"><svg class="icon"><use href="#i-copy"/></svg></button>`
                 : '';
 
+            const esc = MarkdownRenderer.escapeHtml;
             div.innerHTML = `
-                <div class="msg-avatar">${avatarText}</div>
+                <div class="msg-avatar">${esc(avatarText)}</div>
                 <div class="msg-body">
                     <div class="msg-header">
-                        <span class="msg-name">${name}</span>
-                        <span class="msg-time">${msg.time || ''}</span>
+                        <span class="msg-name">${esc(name)}</span>
+                        <span class="msg-time">${esc(msg.time || '')}</span>
                         ${copyBtn}
                     </div>
-                    <div class="msg-content">${msg.role === 'assistant' ? MarkdownRenderer.render(msg.content) : MarkdownRenderer.escapeHtml(msg.content)}</div>
+                    <div class="msg-content">${msg.role === 'assistant' ? MarkdownRenderer.render(msg.content) : esc(msg.content)}</div>
                 </div>
             `;
             this.bindMsgCopyBtn(div);
@@ -2854,11 +2918,27 @@ class Application {
             this.addChatMessage(msg.role, msg.content, msg.meta);
         });
 
-        document.getElementById('chat-followup').disabled = false;
-        document.getElementById('btn-send-followup').disabled = false;
+        // Восстанавливаем conversationHistory для follow-up. Если в записи нет apiMessages
+        // (старая запись из истории до этого фикса) — follow-up отключаем с пояснением.
+        const followupInput = document.getElementById('chat-followup');
+        const followupBtn = document.getElementById('btn-send-followup');
+        const defaultPlaceholder = followupInput.dataset.defaultPlaceholder
+            || (followupInput.dataset.defaultPlaceholder = followupInput.placeholder || 'Задайте уточняющий вопрос...');
+        if (Array.isArray(entry.apiMessages) && entry.apiMessages.length > 0) {
+            this.state.conversationHistory = [...entry.apiMessages];
+            followupInput.disabled = false;
+            followupBtn.disabled = false;
+            followupInput.placeholder = defaultPlaceholder;
+            Toast.show('Сессия восстановлена — можно продолжить диалог');
+        } else {
+            this.state.conversationHistory = [];
+            followupInput.disabled = true;
+            followupBtn.disabled = true;
+            followupInput.placeholder = 'Диалог из старой записи нельзя продолжить. Запустите новый анализ.';
+            Toast.show('Сессия восстановлена (только просмотр, без follow-up)', 'warning');
+        }
 
         this.closeHistoryModal();
-        Toast.show('Сессия восстановлена');
     }
 
     /* ------ Help Page ------ */
