@@ -16,6 +16,8 @@ No build tools, no npm, no bundlers. Open `index.html` directly in a browser. Fu
 
 **Build deploy archive** (for handing to a colleague / server admin): a small Python snippet bundles the 4 essentials + a Russian-language README into `AI-scanner.zip` under a single `AI-scanner/` folder. The archive **is committed to the repo** for direct GitHub-download distribution — rebuild it after any change to `index.html` / `styles.css` / `app.js` / `logo.png` to keep it in sync. Trade-off acknowledged: binary churn in git history; if that becomes a problem, switch to a release-asset workflow.
 
+**Behavior tests**: `node --test tests/vibe_reasoning_fallback.test.js`. These cover VibeCoding reasoning fallback, JSON/recovered review scores, provider URL/model parsing, Python-only Jupyter guidance, copy payload behavior, and auto-collapse rules.
+
 ## Architecture
 
 Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (dark theme via CSS custom properties), `app.js` (all logic).
@@ -42,6 +44,17 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
   - `_askOverflowAction(opts)` — when pre-flight detects token overflow, presents a three-way confirm: `cancel` / `force` / `chunk`. Returns one of those strings.
   - `_chunkCode(code, maxTokensPerChunk, language)` — splits code into chunks targeting `maxTokensPerChunk`, preferring **logical boundaries**: language-specific block starts (`def`/`class`/`function`/`Procedure`/`FORM`/`Процедура`) and blank lines. Hard fallback: line-by-line. Pure function, no DOM.
   - `_runAnalysisChunked({ code, prompt, systemPrompt, meta, chunkBudget })` — sequential chunked analysis. Each chunk gets its own system-prompt suffix (`## КОНТЕКСТ ЧАНКОВАНИЯ — Это часть N из M ...`) so the model knows context boundaries. Final summary-message points user at follow-up for aggregation.
+- **`VibeCodingManager`** — two-model coding loop. Coder writes code, Reviewer scores it, failed scores feed the next coder iteration. Handles reasoning-only LLM output, score parsing/recovery, JSON score fallback, iteration copy buttons, auto-collapsing old iterations, and Python/Jupyter-specific prompt guidance.
+
+### Local Provider Support
+
+Local inference is split into two concepts:
+- **API type** (`localProvider`): `lmstudio`, `ollama`, or `xinference`. This controls endpoint paths and model-list parsing.
+- **API address** (`localUrl`): actual host/port such as `http://localhost:1234`, `http://localhost:11434`, `http://127.0.0.1:9997`, or a corporate server IP.
+
+`LOCAL_PROVIDER_CONFIG` defines provider labels, default URLs, chat paths, and model-list paths. `LLMService.buildLocalChatUrl()` and `buildLocalModelListUrls()` must be used instead of hand-building `/v1/...` URLs. Ollama discovery supports `/api/tags`; LM Studio and Xinference use OpenAI-compatible `/v1/models`.
+
+When deploying to a server with only Xinference, choose **Тип локального API = Xinference** and set **Адрес API-сервера** to the server URL, for example `http://SERVER_IP:9997`. Use `127.0.0.1` only when the browser runs on the same host as Xinference.
 
 ### Data Flow
 
@@ -64,6 +77,23 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
 - **Model detection**: `isLikelyReasoningModel()` checks name patterns; actual detection confirmed by `reasoning_content` presence in stream
 - **Settings indicator**: `updateLocalModelTypeIndicator()` shows "Рассуждающая модель (CoT)" or "Стандартная модель" with auto-detected context window
 - **Edge case**: If model is heuristically detected as reasoning but no `reasoning_content` received, badge shows "Рассуждения не получены" with tooltip
+- **VibeCoding edge case**: `VibeCodingManager._getLLMVisibleText()` uses `content` first, then falls back to `reasoning`. This is required for models that answer reasoning-only through LM Studio/Xinference.
+
+### VibeCoding
+
+VibeCoding is a separate page with a two-model cycle:
+1. Coder receives the task plus optional previous review and returns a full code version.
+2. Reviewer checks that code and must provide a score.
+3. If the score is below threshold, the next coder iteration receives the previous code plus cleaned reviewer remarks.
+
+Important implementation details:
+- Settings keys: `vibeCoderModel`, `vibeReviewerModel`, `vibeMaxIterations`, `vibeScoreThreshold`, `vibeCoderPrompt`, `vibeReviewerPrompt`.
+- Coder and Reviewer always use the local provider configured in the main settings.
+- Reviewer score parsing accepts `ОЦЕНКА: N/10`, `SCORE: N/10`, bare `N/10`, and strict/fenced JSON such as `{"score": 8}`.
+- If the review text exists but score parsing fails, `_buildScoreRecoveryMessages()` asks a short recovery prompt through the coder model when available.
+- Iterations have small top-right widgets: collapse/expand and copy. Coder copy payload is the extracted final code; Reviewer copy payload is the full review text.
+- When a newer iteration starts, older iteration cards auto-collapse. Users can reopen them with the chevron button.
+- For selected language `python`, `_buildVibeLanguageInstruction()` adds notebook guidance to both Coder and Reviewer: code is intended for one Jupyter Notebook/JupyterLab cell, not a CLI `.py` file. Reviewer must not penalize missing `argparse`, `sys.argv`, or `if __name__ == "__main__"` unless the user explicitly requested a script/package. This instruction must not be added for ABAP, 1C, or JavaScript.
 
 ### Prompt System
 
@@ -98,7 +128,7 @@ Token meter in code panel footer tracks context window usage in real-time:
 ### API Configuration
 
 - **Cloud**: DeepSeek API (OpenAI-compatible). `deepseek-chat` (fast) and `deepseek-reasoner` (CoT).
-- **Local**: LM Studio/Ollama/Xinference at configurable URL (default `http://172.16.33.12:9997` — Xinference). `/v1/chat/completions` for inference, `/v1/models` for discovery (with `context_length` extraction).
+- **Local**: LM Studio/Ollama/Xinference at configurable URL (default `http://172.16.33.12:9997` — Xinference). Use the selected provider type (`localProvider`) plus `localUrl`; do not hardcode endpoints. `/v1/chat/completions` is used for OpenAI-compatible inference, while model discovery differs by provider (`/api/tags` for Ollama, `/v1/models` for LM Studio/Xinference, with `context_length` extraction when available).
 - **Shared settings**: `contextWindow` (4K–256K, **client-side meter only, NOT sent to API**, auto-synced from cached `context_length` of selected local model), `maxTokens` (256–16384, default 4096), `temperature` (0–2, default 0.3), `ttfbTimeoutSec` (10–600, default 120 — time-to-first-byte), `requestTimeoutSec` (30–1800, default 300 — idle between SSE chunks). Only `temperature` and `maxTokens` go to the API; `contextWindow` drives the token meter and pre-flight; the two timeouts drive `callLLM` watchdogs.
 - **Server-side n_ctx vs UI contextWindow**: the UI value drives token meter and pre-flight check. Real n_ctx is set at model load (Xinference `--context-length`, LM Studio Load Settings → Context Length, Ollama `num_ctx`). Mismatch was the #1 cause of "model hangs on big files" before v13. **v13+ adds three defenses**: (1) `updateLocalModelTypeIndicator()` auto-syncs `settings.contextWindow` to `largest_option ≤ cachedModel.contextLength` (NOT closest — never overestimate) and `saveSettings()` immediately; (2) `runAnalysis()` pre-flight uses `min(uiCtx, cachedModel.contextLength)` so a manually-set high UI value can't fool the check; (3) when mismatch is detected, `_askOverflowAction()` shows an explicit warning telling the user to click "Загрузить список моделей" for auto-sync.
 
@@ -108,7 +138,7 @@ All keys are loaded through `Schema.safeParse` — corrupt/tampered values fall 
 
 | Key | Content |
 |-----|---------|
-| `codesentinel_settings` | API config, mode, model, temperature, maxTokens, contextWindow, **ttfbTimeoutSec**, **requestTimeoutSec** (idle), **historyEnabled**, **historyTTLDays**, **apiKeySessionOnly**. When `apiKeySessionOnly === true`, `cloudApiKey` is stripped before write — key stays in RAM only, gone on reload. |
+| `codesentinel_settings` | API config, mode, localProvider, model, temperature, maxTokens, contextWindow, **ttfbTimeoutSec**, **requestTimeoutSec** (idle), **historyEnabled**, **historyTTLDays**, **apiKeySessionOnly**, and VibeCoding settings. When `apiKeySessionOnly === true`, `cloudApiKey` is stripped before write — key stays in RAM only, gone on reload. |
 | `codesentinel_prompts` | User-customized prompts matrix (including contextContent, language) |
 | `codesentinel_history` | Past analysis sessions (max 50). Each entry includes `apiMessages` (full conversation for restore) plus visible `messages` (last two for preview). TTL-pruned on load. |
 | `codesentinel_sidebar_collapsed` | Sidebar visibility state |
@@ -167,6 +197,7 @@ CSS custom properties in `:root`. Key tokens:
 - **Copy buttons**: every AI response has copy-to-clipboard; code blocks inside responses have their own copy button (bound via event delegation).
 - **No inline event handlers**: use `addEventListener` or event delegation (`bindCodeCopyDelegation()`).
 - **No `innerHTML` with raw user data**: always escape via `MarkdownRenderer.escapeHtml`, or build via `createElement`+`textContent`. The XSS surface has been audited and closed — don't reopen it.
+- **HTML safety**: any persisted/user-controlled string inserted through `innerHTML` must be escaped via `MarkdownRenderer.escapeHtml()` or rendered through DOM APIs (`textContent`, `appendChild`). This includes prompt `actionName`, model names, history snippets, chat metadata, and filenames.
 - **Modal open/close**: use `_openModal`/`_closeModal` (never `style.display = 'flex'` directly) so ARIA state, focus trap, and focus restoration stay consistent.
 - **Persisted-state changes**: when adding a field to `localStorage`, add a matching entry in the relevant `Schema.safeParse` validator. Skipping this leaves an unvalidated path that can crash the app on tampered data.
 

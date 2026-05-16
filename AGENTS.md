@@ -14,6 +14,8 @@ No build tools, no npm, no bundlers. Open `index.html` directly in a browser. Fu
 
 **Syntax check**: `node -c app.js` (no runtime needed, just syntax validation).
 
+**Behavior tests**: `node --test tests/vibe_reasoning_fallback.test.js`. These cover VibeCoding reasoning fallback, JSON/recovered review scores, provider URL/model parsing, Python-only Jupyter guidance, copy payload behavior, and auto-collapse rules.
+
 ## Architecture
 
 Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (dark theme via CSS custom properties), `app.js` (all logic).
@@ -33,6 +35,17 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
   - `_hasModalUnsavedChanges()` — protects against accidental modal close with unsaved data
   - `_startWaitingTimer(div)` / `_clearWaitingTimer()` — elapsed time indicator while waiting for first LLM response chunk
   - `bindCodeCopyDelegation()` — event delegation for dynamically created code block copy buttons (no inline `onclick`)
+- **`VibeCodingManager`** — two-model coding loop. Coder writes code, Reviewer scores it, failed scores feed the next coder iteration. Handles reasoning-only LLM output, score parsing/recovery, JSON score fallback, iteration copy buttons, auto-collapsing old iterations, and Python/Jupyter-specific prompt guidance.
+
+### Local Provider Support
+
+Local inference is split into two concepts:
+- **API type** (`localProvider`): `lmstudio`, `ollama`, or `xinference`. This controls endpoint paths and model-list parsing.
+- **API address** (`localUrl`): actual host/port such as `http://localhost:1234`, `http://localhost:11434`, `http://127.0.0.1:9997`, or a corporate server IP.
+
+`LOCAL_PROVIDER_CONFIG` defines provider labels, default URLs, chat paths, and model-list paths. `LLMService.buildLocalChatUrl()` and `buildLocalModelListUrls()` must be used instead of hand-building `/v1/...` URLs. Ollama discovery supports `/api/tags`; LM Studio and Xinference use OpenAI-compatible `/v1/models`.
+
+When deploying to a server with only Xinference, choose **Тип локального API = Xinference** and set **Адрес API-сервера** to the server URL, for example `http://SERVER_IP:9997`. Use `127.0.0.1` only when the browser runs on the same host as Xinference.
 
 ### Data Flow
 
@@ -53,6 +66,23 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
 - **Model detection**: `isLikelyReasoningModel()` checks name patterns; actual detection confirmed by `reasoning_content` presence in stream
 - **Settings indicator**: `updateLocalModelTypeIndicator()` shows "Рассуждающая модель (CoT)" or "Стандартная модель" with auto-detected context window
 - **Edge case**: If model is heuristically detected as reasoning but no `reasoning_content` received, badge shows "Рассуждения не получены" with tooltip
+- **VibeCoding edge case**: `VibeCodingManager._getLLMVisibleText()` uses `content` first, then falls back to `reasoning`. This is required for models that answer reasoning-only through LM Studio/Xinference.
+
+### VibeCoding
+
+VibeCoding is a separate page with a two-model cycle:
+1. Coder receives the task plus optional previous review and returns a full code version.
+2. Reviewer checks that code and must provide a score.
+3. If the score is below threshold, the next coder iteration receives the previous code plus cleaned reviewer remarks.
+
+Important implementation details:
+- Settings keys: `vibeCoderModel`, `vibeReviewerModel`, `vibeMaxIterations`, `vibeScoreThreshold`, `vibeCoderPrompt`, `vibeReviewerPrompt`.
+- Coder and Reviewer always use the local provider configured in the main settings.
+- Reviewer score parsing accepts `ОЦЕНКА: N/10`, `SCORE: N/10`, bare `N/10`, and strict/fenced JSON such as `{"score": 8}`.
+- If the review text exists but score parsing fails, `_buildScoreRecoveryMessages()` asks a short recovery prompt through the coder model when available.
+- Iterations have small top-right widgets: collapse/expand and copy. Coder copy payload is the extracted final code; Reviewer copy payload is the full review text.
+- When a newer iteration starts, older iteration cards auto-collapse. Users can reopen them with the chevron button.
+- For selected language `python`, `_buildVibeLanguageInstruction()` adds notebook guidance to both Coder and Reviewer: code is intended for one Jupyter Notebook/JupyterLab cell, not a CLI `.py` file. Reviewer must not penalize missing `argparse`, `sys.argv`, or `if __name__ == "__main__"` unless the user explicitly requested a script/package. This instruction must not be added for ABAP, 1C, or JavaScript.
 
 ### Prompt System
 
@@ -84,14 +114,14 @@ Token meter in code panel footer tracks context window usage in real-time:
 ### API Configuration
 
 - **Cloud**: DeepSeek API (OpenAI-compatible). `deepseek-chat` (fast) and `deepseek-reasoner` (CoT).
-- **Local**: LM Studio/Ollama/Xinference at configurable URL (default `http://172.16.33.12:9997`). `/v1/chat/completions` for inference, `/v1/models` for discovery (with `context_length` extraction).
+- **Local**: LM Studio/Ollama/Xinference at configurable URL (default `http://172.16.33.12:9997`). Use the selected provider type plus `localUrl`; do not hardcode endpoints. `/v1/chat/completions` is used for OpenAI-compatible inference, while model discovery differs by provider.
 - **Shared settings**: `contextWindow` (4K–256K), `maxTokens` (256–16384, default 4096), `temperature` (0–2, default 0.3). All sent to API except `contextWindow`.
 
 ### localStorage Keys
 
 | Key | Content |
 |-----|---------|
-| `codesentinel_settings` | API config, mode, model, temperature, maxTokens, contextWindow |
+| `codesentinel_settings` | API config, mode, localProvider, model, temperature, maxTokens, contextWindow, VibeCoding settings |
 | `codesentinel_prompts` | User-customized prompts matrix (including contextContent, language) |
 | `codesentinel_history` | Past analysis sessions (max 50) |
 | `codesentinel_sidebar_collapsed` | Sidebar visibility state |
@@ -121,6 +151,7 @@ CSS custom properties in `:root`. Key tokens:
 - **File attachments**: only `.txt`, `.md`, `.markdown`. Max 500KB. Binary rejected via heuristic check. Extension validated in JS before reading.
 - **Copy buttons**: every AI response has copy-to-clipboard; code blocks inside responses have their own copy button (bound via event delegation).
 - **No inline event handlers**: use `addEventListener` or event delegation (`bindCodeCopyDelegation()`).
+- **HTML safety**: any persisted/user-controlled string inserted through `innerHTML` must be escaped via `MarkdownRenderer.escapeHtml()` or rendered through DOM APIs (`textContent`, `appendChild`). This includes prompt `actionName`, model names, history snippets, chat metadata, and filenames. Do not regress to raw template interpolation for localStorage-backed data.
 
 ## Reference Files
 

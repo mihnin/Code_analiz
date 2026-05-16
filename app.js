@@ -551,6 +551,67 @@ const LANGUAGES = {
     javascript: 'JavaScript'
 };
 
+const LOCAL_PROVIDER_CONFIG = {
+    lmstudio: {
+        label: 'LM Studio',
+        defaultUrl: 'http://localhost:1234',
+        chatPath: '/v1/chat/completions',
+        modelListPaths: ['/v1/models', '/api/v1/models']
+    },
+    ollama: {
+        label: 'Ollama',
+        defaultUrl: 'http://localhost:11434',
+        chatPath: '/v1/chat/completions',
+        modelListPaths: ['/api/tags', '/v1/models']
+    },
+    xinference: {
+        label: 'Xinference',
+        defaultUrl: 'http://127.0.0.1:9997',
+        chatPath: '/v1/chat/completions',
+        modelListPaths: ['/v1/models']
+    }
+};
+const DEFAULT_LOCAL_PROVIDER = 'xinference';
+const DEFAULT_LOCAL_URL = 'http://172.16.33.12:9997';
+
+/* ============================================================
+   VIBECODE DEFAULTS
+   ============================================================ */
+const DEFAULT_VIBE_CODER_PROMPT = `Ты — Principal Engineer с 15-летним опытом. Пиши только высококачественный код по следующим строгим правилам:
+* Разбивай всё на мелкие, понятные функции и модули
+* Используй TDD-подход: думай сначала о тестах, потом о реализации
+* Код должен быть легко читаемым и легко тестируемым
+* Всегда обрабатывай ошибки явно, никаких silent fail
+* Следуй лучшим практикам языка (PEP8 для Python, современный чистый JS)
+* Используй осмысленные имена переменных и функций
+* Добавляй понятные комментарии только там, где логика действительно сложная
+Пиши только код. Никаких объяснений, если я не попрошу.`;
+
+const DEFAULT_VIBE_REVIEWER_PROMPT = `Ты — крайне придирчивый Senior Code Reviewer. Твоя задача — найти ВСЁ, что можно улучшить. Проверяй код по следующим пунктам:
+* баги и потенциальные ошибки
+* проблемы безопасности
+* неэффективный код и плохая производительность
+* плохая архитектура и структура
+* нарушение лучших практик
+* нечитаемый или запутанный код
+* отсутствие обработки ошибок
+
+Шкала оценок (используй честно, не округляй вверх):
+* 10/10 — production-ready, замечаний нет. Ставится ОЧЕНЬ редко.
+* 9/10 — отлично, есть только косметические улучшения.
+* 7-8/10 — рабочий код с заметными недостатками.
+* 5-6/10 — код работает, но есть существенные проблемы.
+* 1-4/10 — критичные баги, серьёзные нарушения.
+
+Будь максимально строгим. Не ставь 10 «авансом» — каждая нерешённая проблема снижает балл.`;
+
+const REVIEWER_SCORE_INSTRUCTION = `\n\n--- ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ОТВЕТА ---
+ПЕРВАЯ строка ответа ВСЕГДА в формате: ОЦЕНКА: N/10  (N — целое число от 1 до 10)
+ВТОРАЯ и далее — детальные замечания на русском языке маркированным списком.
+Если сервер принудительно возвращает structured JSON, допустим строгий JSON: {"score":N,"review":"..."}.
+Если код идеален — оценка 10/10, ниже допустимо написать «Замечаний нет.».
+НЕ добавляй до строки «ОЦЕНКА:» никаких префиксов, заголовков, кода или комментариев, если не используешь JSON.`;
+
 /* ============================================================
    SCHEMA VALIDATORS — защита от тампера/коррупции localStorage
    ============================================================ */
@@ -614,7 +675,8 @@ class AppState {
             cloudApiKey: '',
             cloudModel: 'deepseek-chat',
             cloudUrl: 'https://api.deepseek.com',
-            localUrl: 'http://172.16.33.12:9997',
+            localProvider: DEFAULT_LOCAL_PROVIDER,
+            localUrl: DEFAULT_LOCAL_URL,
             localModel: '',
             temperature: 0.3,
             maxTokens: 4096,
@@ -623,7 +685,14 @@ class AppState {
             ttfbTimeoutSec: 120,
             historyEnabled: true,
             historyTTLDays: 30,
-            apiKeySessionOnly: false
+            apiKeySessionOnly: false,
+            // Vibecode settings
+            vibeCoderModel: '',
+            vibeReviewerModel: '',
+            vibeMaxIterations: 3,
+            vibeScoreThreshold: 9,
+            vibeCoderPrompt: '',     // empty = use DEFAULT_VIBE_CODER_PROMPT
+            vibeReviewerPrompt: ''   // empty = use DEFAULT_VIBE_REVIEWER_PROMPT
         };
 
         // Prompts
@@ -633,6 +702,7 @@ class AppState {
         this.history = [];
 
         this.loadFromStorage();
+        this.normalizeSettings();
     }
 
     loadFromStorage() {
@@ -641,12 +711,18 @@ class AppState {
             localStorage.getItem('codesentinel_settings'),
             (p) => {
                 if (!p || typeof p !== 'object') return null;
+                const localUrl = Schema.string(p.localUrl, DEFAULT_LOCAL_URL, 500);
                 return {
                     mode: Schema.oneOf(p.mode, ['cloud', 'local'], 'cloud'),
                     cloudApiKey: Schema.string(p.cloudApiKey, '', 500),
                     cloudModel: Schema.string(p.cloudModel, 'deepseek-chat', 100),
                     cloudUrl: Schema.string(p.cloudUrl, 'https://api.deepseek.com', 500),
-                    localUrl: Schema.string(p.localUrl, 'http://172.16.33.12:9997', 500),
+                    localProvider: Schema.oneOf(
+                        p.localProvider,
+                        Object.keys(LOCAL_PROVIDER_CONFIG),
+                        LLMService.inferLocalProviderFromUrl(localUrl)
+                    ),
+                    localUrl,
                     localModel: Schema.string(p.localModel, '', 200),
                     temperature: Schema.number(p.temperature, 0.3, { min: 0, max: 2 }),
                     maxTokens: Schema.integer(p.maxTokens, 4096, { min: 256, max: 16384 }),
@@ -655,7 +731,13 @@ class AppState {
                     ttfbTimeoutSec: Schema.integer(p.ttfbTimeoutSec, 120, { min: 10, max: 600 }),
                     historyEnabled: Schema.boolean(p.historyEnabled, true),
                     historyTTLDays: Schema.integer(p.historyTTLDays, 30, { min: 0, max: 365 }),
-                    apiKeySessionOnly: Schema.boolean(p.apiKeySessionOnly, false)
+                    apiKeySessionOnly: Schema.boolean(p.apiKeySessionOnly, false),
+                    vibeCoderModel: Schema.string(p.vibeCoderModel, '', 200),
+                    vibeReviewerModel: Schema.string(p.vibeReviewerModel, '', 200),
+                    vibeMaxIterations: Schema.integer(p.vibeMaxIterations, 3, { min: 1, max: 10 }),
+                    vibeScoreThreshold: Schema.integer(p.vibeScoreThreshold, 9, { min: 1, max: 10 }),
+                    vibeCoderPrompt: Schema.string(p.vibeCoderPrompt, '', 200000),
+                    vibeReviewerPrompt: Schema.string(p.vibeReviewerPrompt, '', 200000)
                 };
             },
             null
@@ -744,6 +826,15 @@ class AppState {
         }
     }
 
+    normalizeSettings() {
+        if (!LOCAL_PROVIDER_CONFIG[this.settings.localProvider]) {
+            this.settings.localProvider = LLMService.inferLocalProviderFromUrl(this.settings.localUrl);
+        }
+        if (!this.settings.localUrl) {
+            this.settings.localUrl = LLMService.getLocalProviderConfig(this.settings.localProvider).defaultUrl;
+        }
+    }
+
     savePrompts() {
         localStorage.setItem('codesentinel_prompts', JSON.stringify(this.prompts));
     }
@@ -789,6 +880,68 @@ class AppState {
    LLM SERVICE
    ============================================================ */
 class LLMService {
+    static getLocalProviderConfig(provider) {
+        return LOCAL_PROVIDER_CONFIG[provider] || LOCAL_PROVIDER_CONFIG[DEFAULT_LOCAL_PROVIDER];
+    }
+
+    static inferLocalProviderFromUrl(url) {
+        const normalized = String(url || '').toLowerCase();
+        if (normalized.includes(':11434')) return 'ollama';
+        if (normalized.includes(':1234')) return 'lmstudio';
+        if (normalized.includes(':9997')) return 'xinference';
+        return DEFAULT_LOCAL_PROVIDER;
+    }
+
+    static normalizeLocalBaseUrl(url, provider = DEFAULT_LOCAL_PROVIDER) {
+        const config = LLMService.getLocalProviderConfig(provider);
+        let baseUrl = String(url || config.defaultUrl || DEFAULT_LOCAL_URL).trim().replace(/\/+$/, '');
+        baseUrl = baseUrl.replace(/\/v1$/i, '');
+        if (provider === 'ollama') {
+            baseUrl = baseUrl.replace(/\/api$/i, '');
+        }
+        return baseUrl || config.defaultUrl;
+    }
+
+    static buildLocalChatUrl(settings = {}) {
+        const provider = settings.localProvider || LLMService.inferLocalProviderFromUrl(settings.localUrl);
+        const config = LLMService.getLocalProviderConfig(provider);
+        const baseUrl = LLMService.normalizeLocalBaseUrl(settings.localUrl, provider);
+        return `${baseUrl}${config.chatPath}`;
+    }
+
+    static buildLocalModelListUrls(settings = {}) {
+        const provider = settings.localProvider || LLMService.inferLocalProviderFromUrl(settings.localUrl);
+        const config = LLMService.getLocalProviderConfig(provider);
+        const baseUrl = LLMService.normalizeLocalBaseUrl(settings.localUrl, provider);
+        return config.modelListPaths.map(path => `${baseUrl}${path}`);
+    }
+
+    static parseLocalModels(json, provider = DEFAULT_LOCAL_PROVIDER) {
+        const list = Array.isArray(json?.data) ? json.data : (Array.isArray(json?.models) ? json.models : []);
+        const isOllamaTags = provider === 'ollama' && Array.isArray(json?.models) && list.some(m => m?.details || m?.digest || m?.size);
+
+        return list.map(m => {
+            const details = m.details || {};
+            const loadedConfig = m.loaded_instances?.[0]?.config || {};
+            const id = m.id || m.key || m.name || m.model;
+            const displayName = m.name || m.display_name || m.id || m.key || m.model || id;
+            let ownedBy = m.owned_by || m.publisher || '';
+
+            if (isOllamaTags) {
+                ownedBy = [details.family, details.parameter_size].filter(Boolean).join(' ');
+            } else if (!ownedBy && details.family) {
+                ownedBy = details.family;
+            }
+
+            return {
+                id,
+                name: displayName,
+                owned_by: ownedBy,
+                contextLength: m.context_length || m.max_model_len || m.context_window || loadedConfig.context_length || 0
+            };
+        }).filter(m => m.id);
+    }
+
     constructor(state) {
         this.state = state;
     }
@@ -829,16 +982,28 @@ class LLMService {
             };
         }
         return {
-            url: (s.localUrl || 'http://172.16.33.12:9997').replace(/\/+$/, '') + '/v1/chat/completions',
+            url: LLMService.buildLocalChatUrl(s),
             apiKey: '',
             model: s.localModel || 'local-model'
         };
     }
 
-    async callLLM(messages, onChunk, abortSignal) {
-        const config = this.getEndpointConfig();
+    async callLLM(messages, onChunk, abortSignal, options = {}) {
+        // options: { modelOverride, endpointOverride: 'local' | 'cloud', temperature, maxTokens }
+        let config;
+        if (options.endpointOverride === 'local') {
+            const s = this.state.settings;
+            config = {
+                url: LLMService.buildLocalChatUrl(s),
+                apiKey: '',
+                model: options.modelOverride || s.localModel || 'local-model'
+            };
+        } else {
+            config = this.getEndpointConfig();
+            if (options.modelOverride) config.model = options.modelOverride;
+        }
 
-        if (this.state.settings.mode === 'cloud' && !config.apiKey) {
+        if (!options.endpointOverride && this.state.settings.mode === 'cloud' && !config.apiKey) {
             throw new Error('API ключ не указан. Перейдите в Настройки и введите ключ DeepSeek API.');
         }
 
@@ -851,8 +1016,8 @@ class LLMService {
             model: config.model,
             messages: messages,
             stream: true,
-            temperature: this.state.settings.temperature,
-            max_tokens: this.state.settings.maxTokens
+            temperature: options.temperature ?? this.state.settings.temperature,
+            max_tokens: options.maxTokens ?? this.state.settings.maxTokens
         };
 
         // Раздельные таймауты:
@@ -1079,24 +1244,30 @@ class LLMService {
     }
 
     async fetchLocalModels() {
-        const baseUrl = (this.state.settings.localUrl || 'http://172.16.33.12:9997').replace(/\/+$/, '');
-        const response = await fetch(`${baseUrl}/v1/models`, {
-            method: 'GET',
-            signal: LLMService._createTimeoutSignal(10000)
-        });
+        const settings = this.state.settings;
+        const provider = settings.localProvider || LLMService.inferLocalProviderFromUrl(settings.localUrl);
+        const config = LLMService.getLocalProviderConfig(provider);
+        let lastError = null;
 
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        for (const url of LLMService.buildLocalModelListUrls(settings)) {
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    signal: LLMService._createTimeoutSignal(10000)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const json = await response.json();
+                return LLMService.parseLocalModels(json, provider);
+            } catch (err) {
+                lastError = err;
+            }
         }
 
-        const json = await response.json();
-        const models = json.data || json.models || [];
-        return models.map(m => ({
-            id: m.id || m.name || m.model,
-            name: m.id || m.name || m.model,
-            owned_by: m.owned_by || '',
-            contextLength: m.context_length || m.max_model_len || m.context_window || 0
-        })).filter(m => m.id);
+        throw new Error(`${config.label}: ${lastError?.message || 'не удалось получить список моделей'}`);
     }
 }
 
@@ -1287,6 +1458,1182 @@ class Toast {
 }
 
 /* ============================================================
+   VIBECODING MANAGER
+   ============================================================ */
+class VibeCodingManager {
+    constructor(app) {
+        this.app = app;
+        this.state = app.state;
+        this.llm = app.llm;
+        this.iterations = [];       // { num, code, review, score, coderModel, reviewerModel }
+        this.isRunning = false;
+        this.abortController = null;
+        this.currentTask = '';
+        this.currentLang = 'python';
+        this._localModelsCache = {};
+    }
+
+    init() {
+        this._bindUI();
+        this._restorePromptsToUI();
+        this._renderBanner();
+        this._updateRunButton();
+    }
+
+    /* ---------- helpers ---------- */
+    static _getLLMVisibleText(result) {
+        const content = result?.content || '';
+        if (content.trim()) return content;
+        return result?.reasoning || '';
+    }
+
+    static _getIterationCopyText(column, visibleText, finalText = '') {
+        const final = String(finalText || '').trim();
+        if (column === 'coder' && final) return final;
+        return String(visibleText || '').trim();
+    }
+
+    static _shouldAutoCollapseIteration(iterValue, currentIter) {
+        const iter = Number.parseInt(iterValue, 10);
+        return Number.isFinite(iter) && iter < currentIter;
+    }
+
+    static _buildVibeLanguageInstruction(role, language, langLabel) {
+        const lang = language || '';
+        const label = langLabel || lang || 'не указан';
+        let instruction = `\n\nЯзык программирования: ${label}. Оборачивай итоговый код в \`\`\`${lang || 'text'} … \`\`\` блок.`;
+
+        if (lang !== 'python') return instruction;
+
+        if (role === 'reviewer') {
+            instruction += `\n\n--- Контекст Python/Jupyter Notebook ---
+Код предназначен для копирования в одну ячейку Jupyter Notebook/JupyterLab, а не обязательно в отдельный .py-файл.
+Не снижай оценку только за отсутствие argparse, sys.argv, if __name__ == "__main__" или CLI-структуры, если пользователь явно не просил скрипт/пакет.
+Проверяй notebook-эргономику: понятные переменные входных файлов в начале ячейки, явный вывод результата через display(...), .head() или print(...), отсутствие лишнего разбиения на файлы.
+Критиковать нужно реальные проблемы: ошибки, безопасность, обработку данных, читаемость, воспроизводимость и удобство запуска в ноутбуке.`;
+            return instruction;
+        }
+
+        instruction += `\n\n--- Python/Jupyter Notebook ---
+Пиши Python как код для одной ячейки Jupyter Notebook/JupyterLab, чтобы пользователь мог сразу скопировать и запустить его в ноутбуке.
+Не делай CLI-обвязку без явной просьбы: не используй argparse, sys.argv и if __name__ == "__main__".
+Если нужны входные файлы Excel/CSV/JSON, задай понятные переменные в начале ячейки, например file_path = "data.xlsx".
+Для табличных результатов используй pandas и показывай результат через display(...) или .head(), если это уместно.
+Не дроби ответ на несколько файлов; отдельные файлы создавай только если пользователь явно попросил полноценный проект или модуль.`;
+        return instruction;
+    }
+
+    static _coerceScore(value) {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            const rounded = Math.round(value);
+            return rounded >= 1 && rounded <= 10 ? rounded : null;
+        }
+        if (typeof value !== 'string') return null;
+        const clean = value.trim().replace(',', '.');
+        const ratio = clean.match(/^(\d{1,2})(?:\.\d+)?\s*\/\s*10\b/);
+        const plain = clean.match(/^(\d{1,2})(?:\.\d+)?$/);
+        const score = ratio ? parseInt(ratio[1], 10) : (plain ? parseInt(plain[1], 10) : null);
+        return score !== null && score >= 1 && score <= 10 ? score : null;
+    }
+
+    static _scoreFromJsonValue(value) {
+        const scoreKeys = new Set(['score', 'rating', 'grade', 'оценка', 'балл', 'баллы']);
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const score = VibeCodingManager._scoreFromJsonValue(item);
+                if (score !== null) return score;
+            }
+            return null;
+        }
+        if (!value || typeof value !== 'object') return null;
+
+        for (const [key, item] of Object.entries(value)) {
+            if (scoreKeys.has(key.toLowerCase())) {
+                const score = VibeCodingManager._coerceScore(item);
+                if (score !== null) return score;
+            }
+        }
+        for (const item of Object.values(value)) {
+            const score = VibeCodingManager._scoreFromJsonValue(item);
+            if (score !== null) return score;
+        }
+        return null;
+    }
+
+    static _findJsonCandidates(text) {
+        const candidates = [];
+        const raw = String(text || '');
+        raw.replace(/```(?:json)?\s*([\s\S]*?)```/gi, (_, body) => {
+            candidates.push(body.trim());
+            return '';
+        });
+
+        const trimmed = raw.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            candidates.push(trimmed);
+        }
+
+        for (let i = 0; i < raw.length; i++) {
+            if (raw[i] !== '{' && raw[i] !== '[') continue;
+            const startChar = raw[i];
+            const endChar = startChar === '{' ? '}' : ']';
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            for (let j = i; j < raw.length; j++) {
+                const ch = raw[j];
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+                if (ch === '\\') {
+                    escape = true;
+                    continue;
+                }
+                if (ch === '"') {
+                    inString = !inString;
+                    continue;
+                }
+                if (inString) continue;
+                if (ch === startChar) depth++;
+                if (ch === endChar) depth--;
+                if (depth === 0) {
+                    candidates.push(raw.slice(i, j + 1));
+                    i = j;
+                    break;
+                }
+            }
+        }
+        return [...new Set(candidates.filter(Boolean))];
+    }
+
+    static _extractScoreFromJson(text) {
+        for (const candidate of VibeCodingManager._findJsonCandidates(text)) {
+            try {
+                const parsed = JSON.parse(candidate);
+                const score = VibeCodingManager._scoreFromJsonValue(parsed);
+                if (score !== null) return score;
+            } catch { /* not strict JSON, try next candidate */ }
+        }
+        return null;
+    }
+
+    static _extractScoreLine(text) {
+        const lines = (text || '').split('\n').slice(0, 10);
+        for (const line of lines) {
+            const clean = line.replace(/[*_]+/g, '').trim();
+            const prefixed = clean.match(/^(ОЦЕНКА|SCORE)\s*[:：]\s*(\d{1,2})\s*\/\s*10\b/i);
+            const bare = clean.match(/^(\d{1,2})\s*\/\s*10\b/);
+            const score = prefixed ? parseInt(prefixed[2], 10) : (bare ? parseInt(bare[1], 10) : null);
+            if (score !== null && score >= 1 && score <= 10) {
+                return `ОЦЕНКА: ${score}/10`;
+            }
+        }
+        const jsonScore = VibeCodingManager._extractScoreFromJson(text);
+        if (jsonScore !== null) return `ОЦЕНКА: ${jsonScore}/10`;
+        return '';
+    }
+
+    static _createRecoveredReview(scoreText, reviewText) {
+        const scoreLine = VibeCodingManager._extractScoreLine(scoreText);
+        if (!scoreLine) return reviewText || '';
+        const review = (reviewText || '').trim();
+        return `${scoreLine}\n\n_Оценка восстановлена отдельным коротким запросом, потому что ревьюер не вернул её первой строкой._\n\n${review}`;
+    }
+
+    static _buildScoreRecoveryMessages({ langLabel, task, code, review }) {
+        return [
+            {
+                role: 'system',
+                content: 'Ты нормализатор результата code review. По коду и тексту ревью выставь итоговую оценку. Предпочтительный ответ — ровно одна строка в формате: ОЦЕНКА: N/10. Если модель принудительно отвечает JSON, верни строго {"score":N}. N — целое число от 1 до 10. Никаких пояснений, markdown, заголовков и дополнительных строк.'
+            },
+            {
+                role: 'user',
+                content:
+                    `Язык: ${langLabel}\n\n` +
+                    `Задача:\n${task}\n\n` +
+                    `Код:\n\`\`\`\n${code}\n\`\`\`\n\n` +
+                    `Текст ревью без формальной оценки:\n${review}`
+            }
+        ];
+    }
+
+    _getScoreRecoveryModel(reviewerModel, coderModel) {
+        return (coderModel && coderModel !== reviewerModel) ? coderModel : reviewerModel;
+    }
+
+    _getCoderPrompt() {
+        return (this.state.settings.vibeCoderPrompt || '').trim() || DEFAULT_VIBE_CODER_PROMPT;
+    }
+
+    _getReviewerPrompt() {
+        return (this.state.settings.vibeReviewerPrompt || '').trim() || DEFAULT_VIBE_REVIEWER_PROMPT;
+    }
+
+    _parseScore(reviewText) {
+        if (!reviewText) return null;
+        // Удаляем markdown-обёртки **_, чтобы паттерны были устойчивыми к "форматированию"
+        const stripMd = (s) => s.replace(/[*_]+/g, '');
+        const lines = reviewText.split('\n');
+        const firstLine = stripMd(lines.find(l => l.trim()) || '');
+
+        // Поиск строго в первой непустой строке — основной сценарий
+        const strictPatterns = [
+            /ОЦЕНКА\s*[:：]\s*(\d{1,2})\s*\/\s*10/i,
+            /SCORE\s*[:：]\s*(\d{1,2})\s*\/\s*10/i,
+            /^\s*(\d{1,2})\s*\/\s*10\b/
+        ];
+        for (const re of strictPatterns) {
+            const m = firstLine.match(re);
+            if (m) {
+                const n = parseInt(m[1], 10);
+                if (n >= 1 && n <= 10) return n;
+            }
+        }
+        // Фолбэк: явный префикс «ОЦЕНКА:» в первых 5 строках
+        const head = stripMd(lines.slice(0, 5).join('\n'));
+        const fallbackMatch = head.match(/ОЦЕНКА\s*[:：]\s*(\d{1,2})\s*\/\s*10/i)
+            || head.match(/SCORE\s*[:：]\s*(\d{1,2})\s*\/\s*10/i);
+        if (fallbackMatch) {
+            const n = parseInt(fallbackMatch[1], 10);
+            if (n >= 1 && n <= 10) return n;
+        }
+        const jsonScore = VibeCodingManager._extractScoreFromJson(reviewText);
+        if (jsonScore !== null) return jsonScore;
+        return null;
+    }
+
+    _scoreClass(score) {
+        if (score === null || score === undefined) return 'score-na';
+        if (score >= 9) return 'score-good';
+        if (score >= 7) return 'score-warn';
+        return 'score-bad';
+    }
+
+    _extractCodeFromCoderOutput(text) {
+        if (!text) return '';
+        // \r?\n — некоторые серверы LM Studio/прокси возвращают CRLF.
+        // Берём САМЫЙ ДЛИННЫЙ блок: модели часто показывают «было/стало», финальная версия длиннее.
+        const matches = [...text.matchAll(/```[\w+-]*\r?\n([\s\S]*?)```/g)];
+        if (matches.length === 0) return text.trim();
+        let best = matches[0][1];
+        for (const m of matches) {
+            if (m[1].length > best.length) best = m[1];
+        }
+        return best.trim();
+    }
+
+    /* ---------- UI binding ---------- */
+    _bindUI() {
+        const taskInput = document.getElementById('vibe-task');
+        const langSelect = document.getElementById('vibe-lang');
+        const btnRun = document.getElementById('btn-vibe-run');
+        const btnStop = document.getElementById('btn-vibe-stop');
+        const btnReset = document.getElementById('btn-vibe-reset');
+        const btnClearLog = document.getElementById('btn-vibe-clear-log');
+        const btnGotoSettings = document.getElementById('vibe-goto-settings');
+
+        taskInput.addEventListener('input', () => {
+            const len = taskInput.value.length;
+            document.getElementById('vibe-task-stats').textContent = `${len} символов`;
+            this._updateRunButton();
+        });
+
+        langSelect.addEventListener('change', () => {
+            this.currentLang = langSelect.value;
+        });
+        this.currentLang = langSelect.value;
+
+        btnRun.addEventListener('click', () => this.runCycle());
+        btnStop.addEventListener('click', () => this.stop());
+        btnReset.addEventListener('click', () => this.resetIterations());
+        btnClearLog.addEventListener('click', () => this._clearLog());
+
+        btnGotoSettings.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.app.navigateTo('settings');
+            // Двойной rAF — гарантирует, что страница успела отрендериться
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                const card = document.querySelector('#page-settings .card h2 use[href="#i-sparkles"]');
+                card?.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }));
+        });
+
+        document.querySelectorAll('[data-vibe-save]').forEach(btn => {
+            btn.addEventListener('click', () => this._saveColumnPrompt(btn.dataset.vibeSave));
+        });
+        document.querySelectorAll('[data-vibe-reset]').forEach(btn => {
+            btn.addEventListener('click', () => this._resetColumnPrompt(btn.dataset.vibeReset));
+        });
+
+        document.getElementById('btn-vibe-continue').addEventListener('click', () => this._fallbackContinue());
+        document.getElementById('btn-vibe-take-best').addEventListener('click', () => this._fallbackTake('best'));
+        document.getElementById('btn-vibe-take-last').addEventListener('click', () => this._fallbackTake('last'));
+        document.getElementById('btn-vibe-abort').addEventListener('click', () => this._fallbackAbort());
+
+        // Закрытие fallback-модалки по клику на подложку
+        const fallbackOverlay = document.getElementById('vibe-fallback-overlay');
+        fallbackOverlay.addEventListener('click', (e) => {
+            if (e.target === fallbackOverlay) this._hideFallbackModal();
+        });
+    }
+
+    _restorePromptsToUI() {
+        document.getElementById('vibe-coder-prompt').value = this._getCoderPrompt();
+        document.getElementById('vibe-reviewer-prompt').value = this._getReviewerPrompt();
+    }
+
+    _saveColumnPrompt(which) {
+        const id = which === 'coder' ? 'vibe-coder-prompt' : 'vibe-reviewer-prompt';
+        const field = which === 'coder' ? 'vibeCoderPrompt' : 'vibeReviewerPrompt';
+        const val = document.getElementById(id).value.trim();
+        const def = which === 'coder' ? DEFAULT_VIBE_CODER_PROMPT : DEFAULT_VIBE_REVIEWER_PROMPT;
+        this.state.settings[field] = (val === def) ? '' : val;
+        this.state.saveSettings();
+        const settingsId = which === 'coder' ? 'vibe-coder-prompt-settings' : 'vibe-reviewer-prompt-settings';
+        const settingsField = document.getElementById(settingsId);
+        if (settingsField) settingsField.value = val || def;
+        Toast.show(`Промпт ${which === 'coder' ? 'Кодера' : 'Ревьюера'} сохранён`);
+    }
+
+    _resetColumnPrompt(which) {
+        const id = which === 'coder' ? 'vibe-coder-prompt' : 'vibe-reviewer-prompt';
+        const def = which === 'coder' ? DEFAULT_VIBE_CODER_PROMPT : DEFAULT_VIBE_REVIEWER_PROMPT;
+        document.getElementById(id).value = def;
+        const field = which === 'coder' ? 'vibeCoderPrompt' : 'vibeReviewerPrompt';
+        this.state.settings[field] = '';
+        this.state.saveSettings();
+        const settingsId = which === 'coder' ? 'vibe-coder-prompt-settings' : 'vibe-reviewer-prompt-settings';
+        const settingsField = document.getElementById(settingsId);
+        if (settingsField) settingsField.value = def;
+        Toast.show('Промпт восстановлен по умолчанию');
+    }
+
+    /* ---------- Banner / Run-button state ---------- */
+    _renderBanner() {
+        const coder = this.state.settings.vibeCoderModel;
+        const reviewer = this.state.settings.vibeReviewerModel;
+        const maxIter = this.state.settings.vibeMaxIterations || 3;
+        const threshold = this.state.settings.vibeScoreThreshold || 9;
+
+        const coderEl = document.getElementById('vibe-coder-name');
+        const reviewerEl = document.getElementById('vibe-reviewer-name');
+        if (!coderEl) return;
+        coderEl.textContent = coder || 'не выбран';
+        coderEl.classList.toggle('empty', !coder);
+        reviewerEl.textContent = reviewer || 'не выбран';
+        reviewerEl.classList.toggle('empty', !reviewer);
+
+        document.getElementById('vibe-maxiter-name').textContent = String(maxIter);
+        document.getElementById('vibe-threshold-name').textContent = `${threshold}/10`;
+
+        // Бейджи моделей с предупреждением, если обе модели одинаковые
+        const coderBadge = document.getElementById('vibe-coder-model-badge');
+        const reviewerBadge = document.getElementById('vibe-reviewer-model-badge');
+        const sameModel = coder && reviewer && coder === reviewer;
+        coderBadge.textContent = coder || '—';
+        reviewerBadge.textContent = reviewer || '—';
+        coderBadge.title = sameModel ? 'Внимание: Кодер и Ревьюер используют одну и ту же модель — теряется независимость оценки' : '';
+        reviewerBadge.title = coderBadge.title;
+        coderBadge.classList.toggle('same-model-warn', !!sameModel);
+        reviewerBadge.classList.toggle('same-model-warn', !!sameModel);
+    }
+
+    _updateRunButton() {
+        const btn = document.getElementById('btn-vibe-run');
+        if (!btn) return;
+        const task = (document.getElementById('vibe-task').value || '').trim();
+        const hasModels = !!(this.state.settings.vibeCoderModel && this.state.settings.vibeReviewerModel);
+        const fallbackVisible = document.getElementById('vibe-fallback-overlay')?.style.display === 'flex';
+        btn.disabled = !task || !hasModels || this.isRunning || fallbackVisible;
+        if (fallbackVisible) {
+            btn.title = 'Завершите выбор в окне «Порог не достигнут»';
+        } else if (!hasModels) {
+            btn.title = 'Сначала выберите модели Кодера и Ревьюера в Настройках';
+        } else if (!task) {
+            btn.title = 'Введите задачу';
+        } else {
+            btn.title = 'Запустить цикл';
+        }
+    }
+
+    /* ---------- Logging ---------- */
+    _log(text, level = 'info') {
+        const log = document.getElementById('vibe-log');
+        const empty = log.querySelector('.vibe-log-empty');
+        if (empty) empty.remove();
+
+        const entry = document.createElement('div');
+        entry.className = `vibe-log-entry log-${level}`;
+        const time = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const timeEl = document.createElement('span');
+        timeEl.className = 'vibe-log-time';
+        timeEl.textContent = time;
+        const textEl = document.createElement('span');
+        textEl.className = 'vibe-log-text';
+        textEl.textContent = text;
+        entry.appendChild(timeEl);
+        entry.appendChild(textEl);
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+    }
+
+    _clearLog() {
+        const log = document.getElementById('vibe-log');
+        log.innerHTML = '<div class="vibe-log-empty">Лог появится при запуске цикла</div>';
+    }
+
+    /* ---------- Iteration rendering ---------- */
+    _resetIterationLists() {
+        document.getElementById('vibe-coder-iters').innerHTML = '<div class="vibe-iter-empty">Кодер ещё не писал</div>';
+        document.getElementById('vibe-reviewer-iters').innerHTML = '<div class="vibe-iter-empty">Ревьюер ещё не проверял</div>';
+    }
+
+    resetIterations() {
+        if (this.isRunning) {
+            Toast.show('Сначала остановите цикл', 'warning');
+            return;
+        }
+        this.iterations = [];
+        this._resetIterationLists();
+        this._clearLog();
+        Toast.show('Сессия Вайбкодинга сброшена');
+    }
+
+    _createIterBlock(column, num, label) {
+        this._autoCollapsePreviousIterations(num);
+
+        const list = document.getElementById(column === 'coder' ? 'vibe-coder-iters' : 'vibe-reviewer-iters');
+        const empty = list.querySelector('.vibe-iter-empty');
+        if (empty) empty.remove();
+
+        const div = document.createElement('div');
+        div.className = 'vibe-iter is-streaming';
+        div.dataset.iter = String(num);
+        div.dataset.column = column;
+        const numSpan = document.createElement('span');
+        numSpan.className = 'vibe-iter-num';
+        numSpan.innerHTML = `<span class="vibe-streaming-dot"></span>`;
+        numSpan.appendChild(document.createTextNode(` Итерация ${num} — ${label}`));
+
+        const header = document.createElement('div');
+        header.className = 'vibe-iter-header';
+        header.appendChild(numSpan);
+
+        const tools = document.createElement('span');
+        tools.className = 'vibe-iter-tools';
+        const badges = document.createElement('span');
+        badges.className = 'vibe-iter-badges';
+        tools.appendChild(badges);
+        tools.appendChild(this._createIterCollapseButton());
+        tools.appendChild(this._createIterCopyButton(column));
+        header.appendChild(tools);
+
+        const body = document.createElement('div');
+        body.className = 'vibe-iter-body';
+
+        div.appendChild(header);
+        div.appendChild(body);
+        list.appendChild(div);
+        list.scrollTop = list.scrollHeight;
+        return div;
+    }
+
+    _autoCollapsePreviousIterations(currentIter) {
+        document.querySelectorAll('#page-vibecode .vibe-iter').forEach(div => {
+            if (VibeCodingManager._shouldAutoCollapseIteration(div.dataset.iter, currentIter)) {
+                this._setIterCollapsed(div, true);
+            }
+        });
+    }
+
+    _createIterCollapseButton() {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'vibe-collapse-widget';
+        btn.innerHTML = '<svg class="icon"><use href="#i-chevron"/></svg>';
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const block = btn.closest('.vibe-iter');
+            if (!block) return;
+            this._setIterCollapsed(block, !block.classList.contains('is-collapsed'));
+        });
+        this._syncIterCollapseButton(btn, false);
+        return btn;
+    }
+
+    _setIterCollapsed(div, collapsed) {
+        if (!div) return;
+        div.classList.toggle('is-collapsed', collapsed);
+        this._syncIterCollapseButton(div.querySelector('.vibe-collapse-widget'), collapsed);
+    }
+
+    _syncIterCollapseButton(btn, collapsed) {
+        if (!btn) return;
+        const label = collapsed ? 'Развернуть итерацию' : 'Свернуть итерацию';
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+
+    _createIterCopyButton(column) {
+        const label = column === 'coder' ? 'Скопировать код' : 'Скопировать ревью';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'vibe-copy-widget';
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+        btn.disabled = true;
+        btn.innerHTML = '<svg class="icon"><use href="#i-copy"/></svg>';
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._copyIterText(btn.closest('.vibe-iter'));
+        });
+        return btn;
+    }
+
+    _setIterCopyText(div, text) {
+        div._copyText = String(text || '').trim();
+        const btn = div.querySelector('.vibe-copy-widget');
+        if (btn) btn.disabled = !div._copyText;
+    }
+
+    _writeClipboard(text) {
+        if (navigator.clipboard?.writeText) {
+            return navigator.clipboard.writeText(text);
+        }
+
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.left = '-9999px';
+        area.style.top = '0';
+        document.body.appendChild(area);
+        area.select();
+        try {
+            const ok = document.execCommand('copy');
+            return ok ? Promise.resolve() : Promise.reject(new Error('copy command failed'));
+        } finally {
+            area.remove();
+        }
+    }
+
+    async _copyIterText(div) {
+        if (!div) return;
+        const text = String(div._copyText || '').trim();
+        if (!text) {
+            Toast.show('Пока нечего копировать', 'warning');
+            return;
+        }
+
+        const btn = div.querySelector('.vibe-copy-widget');
+        const column = div.dataset.column;
+        const successText = column === 'reviewer' ? 'Ревью скопировано' : 'Код скопирован';
+        try {
+            await this._writeClipboard(text);
+            this._flashIterCopyButton(btn);
+            Toast.show(successText);
+        } catch {
+            Toast.show('Не удалось скопировать', 'warning');
+        }
+    }
+
+    _flashIterCopyButton(btn) {
+        if (!btn) return;
+        clearTimeout(btn._copyResetTimer);
+        const icon = btn.querySelector('use');
+        btn.classList.add('copied');
+        if (icon) icon.setAttribute('href', '#i-check');
+        btn._copyResetTimer = setTimeout(() => {
+            btn.classList.remove('copied');
+            if (icon) icon.setAttribute('href', '#i-copy');
+        }, 1200);
+    }
+
+    _updateIterBody(div, text) {
+        const body = div.querySelector('.vibe-iter-body');
+        this._setIterCopyText(div, text);
+        body.innerHTML = MarkdownRenderer.render(text || '*(пусто)*');
+        const list = div.parentElement;
+        list.scrollTop = list.scrollHeight;
+    }
+
+    _finalizeCoderIter(div, num, code) {
+        div.classList.remove('is-streaming');
+        const numEl = div.querySelector('.vibe-iter-num');
+        numEl.innerHTML = '';
+        numEl.appendChild(document.createTextNode(`Итерация ${num}`));
+        this._setIterCopyText(div, VibeCodingManager._getIterationCopyText('coder', div._copyText, code));
+    }
+
+    _finalizeReviewerIter(div, num, score, reviewText = '') {
+        div.classList.remove('is-streaming');
+        const numEl = div.querySelector('.vibe-iter-num');
+        numEl.innerHTML = '';
+        numEl.appendChild(document.createTextNode(`Итерация ${num}`));
+        this._setIterCopyText(div, VibeCodingManager._getIterationCopyText('reviewer', reviewText || div._copyText));
+        const badges = div.querySelector('.vibe-iter-badges');
+        badges.innerHTML = '';
+        const span = document.createElement('span');
+        span.className = `vibe-score-badge ${this._scoreClass(score)}`;
+        span.textContent = score === null ? 'оценка не распознана' : `${score}/10`;
+        badges.appendChild(span);
+    }
+
+    _markFinal(num) {
+        document.querySelectorAll(`.vibe-iter[data-iter="${num}"]`).forEach(div => {
+            div.classList.add('is-final');
+            const badges = div.querySelector('.vibe-iter-badges');
+            if (badges && !badges.querySelector('.vibe-final-badge')) {
+                const span = document.createElement('span');
+                span.className = 'vibe-final-badge';
+                span.innerHTML = '<svg class="icon"><use href="#i-check"/></svg> Финал';
+                badges.appendChild(span);
+            }
+        });
+    }
+
+    _markBest(num) {
+        document.querySelectorAll(`.vibe-iter[data-iter="${num}"]`).forEach(div => {
+            div.classList.add('is-best');
+            const badges = div.querySelector('.vibe-iter-badges');
+            if (badges && !badges.querySelector('.vibe-best-badge') && !badges.querySelector('.vibe-final-badge')) {
+                const span = document.createElement('span');
+                span.className = 'vibe-best-badge';
+                span.textContent = 'Лучший';
+                badges.appendChild(span);
+            }
+        });
+    }
+
+    /* ---------- Main cycle ---------- */
+    async runCycle() {
+        if (this.isRunning) return;
+
+        const task = document.getElementById('vibe-task').value.trim();
+        if (!task) { Toast.show('Введите задачу', 'warning'); return; }
+
+        const coderModel = this.state.settings.vibeCoderModel;
+        const reviewerModel = this.state.settings.vibeReviewerModel;
+        if (!coderModel || !reviewerModel) {
+            Toast.show('Выберите модели Кодера и Ревьюера в Настройках', 'warning');
+            return;
+        }
+
+        this.iterations = [];
+        this.currentTask = task;
+        this.currentLang = document.getElementById('vibe-lang').value;
+        this._resetIterationLists();
+
+        const taskPreview = task.length > 80 ? task.slice(0, 80) + '…' : task;
+        this._log(`Старт. Задача: «${taskPreview}»`, 'info');
+        this._log(`Кодер: ${coderModel} | Ревьюер: ${reviewerModel} | Язык: ${LANGUAGES[this.currentLang] || this.currentLang}`, 'info');
+
+        await this._loop(this.state.settings.vibeMaxIterations || 3);
+    }
+
+    async _loop(maxIterations) {
+        this._setRunning(true);
+        this.abortController = new AbortController();
+        try {
+            const startFrom = this.iterations.length;
+            for (let i = 0; i < maxIterations; i++) {
+                const iterNum = startFrom + i + 1;
+                const prevIter = this.iterations[this.iterations.length - 1] || null;
+                await this._doOneIteration(iterNum, prevIter);
+
+                if (this.abortController.signal.aborted) {
+                    this._log('Цикл остановлен пользователем', 'warn');
+                    return;
+                }
+
+                const last = this.iterations[this.iterations.length - 1];
+                if (last && last.score !== null && last.score >= this.state.settings.vibeScoreThreshold) {
+                    this._log(`Порог ${this.state.settings.vibeScoreThreshold}/10 достигнут на итерации ${iterNum}. Финал.`, 'ok');
+                    this._markFinal(iterNum);
+                    return;
+                }
+            }
+            this._showFallbackModal();
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                this._log('Цикл прерван', 'warn');
+            } else {
+                this._log(`Ошибка: ${err.message}`, 'err');
+                Toast.show(err.message, 'error', 6000);
+            }
+        } finally {
+            // Снимаем оставшиеся "пульсирующие" блоки — если abort/error прервали итерацию
+            this._cleanupOrphanStreamingBlocks();
+            this._setRunning(false);
+            this.abortController = null;
+        }
+    }
+
+    _cleanupOrphanStreamingBlocks() {
+        document.querySelectorAll('#page-vibecode .vibe-iter.is-streaming').forEach(div => {
+            div.classList.remove('is-streaming');
+            const numEl = div.querySelector('.vibe-iter-num');
+            if (numEl) {
+                const iter = div.dataset.iter;
+                numEl.innerHTML = '';
+                numEl.appendChild(document.createTextNode(`Итерация ${iter} — прервано`));
+            }
+            const badges = div.querySelector('.vibe-iter-badges');
+            if (badges && !badges.querySelector('.vibe-score-badge') && !badges.querySelector('.vibe-final-badge')) {
+                const span = document.createElement('span');
+                span.className = 'vibe-score-badge score-na';
+                span.textContent = 'прервано';
+                badges.appendChild(span);
+            }
+        });
+    }
+
+    async _doOneIteration(iterNum, prevIter) {
+        const coderModel = this.state.settings.vibeCoderModel;
+        const reviewerModel = this.state.settings.vibeReviewerModel;
+        const langLabel = LANGUAGES[this.currentLang] || this.currentLang;
+
+        /* --- Step 1: Coder --- */
+        this._log(`Итерация ${iterNum} — Кодер (${coderModel}) пишет…`, 'info');
+        const coderBlock = this._createIterBlock('coder', iterNum, 'Кодер пишет…');
+
+        const coderSystem = (document.getElementById('vibe-coder-prompt').value.trim() || DEFAULT_VIBE_CODER_PROMPT)
+            + VibeCodingManager._buildVibeLanguageInstruction('coder', this.currentLang, langLabel);
+
+        let coderUser;
+        if (prevIter && prevIter.code) {
+            const prevScoreLabel = prevIter.score === null ? '?' : `${prevIter.score}/10`;
+            // Очищаем замечания: убираем первую строку с «ОЦЕНКА: N/10», она для парсера, не для модели.
+            // Поддерживаем markdown-обёртки (**ОЦЕНКА**, _ОЦЕНКА_), которые иногда генерят модели.
+            const reviewClean = (prevIter.review || '')
+                .replace(/^\s*[*_]*\s*(ОЦЕНКА|SCORE)\s*[*_]*\s*[:：]\s*[*_]*\s*\d{1,2}\s*\/\s*10\s*[*_]*[^\n]*\n?/i, '')
+                .trim() || '(без замечаний)';
+            coderUser =
+                `Исходная задача:\n${this.currentTask}\n\n` +
+                `Предыдущая версия кода (итерация ${prevIter.num}, оценка ${prevScoreLabel}):\n` +
+                `\`\`\`${this.currentLang}\n${prevIter.code}\n\`\`\`\n\n` +
+                `Замечания Ревьюера:\n${reviewClean}\n\n` +
+                `Исправь код согласно замечаниям. Верни ПОЛНУЮ исправленную версию (не дифф).`;
+        } else {
+            coderUser = `Задача: ${this.currentTask}`;
+        }
+
+        const coderMessages = [
+            { role: 'system', content: coderSystem },
+            { role: 'user', content: coderUser }
+        ];
+
+        const coderResult = await this.llm.callLLM(
+            coderMessages,
+            ({ fullContent, fullReasoning }) => this._updateIterBody(
+                coderBlock,
+                VibeCodingManager._getLLMVisibleText({ content: fullContent, reasoning: fullReasoning })
+            ),
+            this.abortController.signal,
+            { endpointOverride: 'local', modelOverride: coderModel }
+        );
+
+        if (this.abortController.signal.aborted) return;
+
+        const coderVisibleText = VibeCodingManager._getLLMVisibleText(coderResult);
+        const codeOnly = this._extractCodeFromCoderOutput(coderVisibleText);
+        this._finalizeCoderIter(coderBlock, iterNum, codeOnly);
+        this._log(`Итерация ${iterNum} — Кодер закончил (${codeOnly.split('\n').length} строк)`, 'info');
+
+        /* --- Step 2: Reviewer --- */
+        this._log(`Итерация ${iterNum} — Ревьюер (${reviewerModel}) проверяет…`, 'info');
+        const reviewerBlock = this._createIterBlock('reviewer', iterNum, 'Ревьюер анализирует…');
+
+        const reviewerSystem = (document.getElementById('vibe-reviewer-prompt').value.trim() || DEFAULT_VIBE_REVIEWER_PROMPT)
+            + VibeCodingManager._buildVibeLanguageInstruction('reviewer', this.currentLang, langLabel)
+            + REVIEWER_SCORE_INSTRUCTION;
+
+        const reviewerUser =
+            `Язык: ${langLabel}\n\nЗадача автора:\n${this.currentTask}\n\n` +
+            `Код на ревью:\n\`\`\`${this.currentLang}\n${codeOnly}\n\`\`\``;
+
+        const reviewerMessages = [
+            { role: 'system', content: reviewerSystem },
+            { role: 'user', content: reviewerUser }
+        ];
+
+        const reviewerResult = await this.llm.callLLM(
+            reviewerMessages,
+            ({ fullContent, fullReasoning }) => this._updateIterBody(
+                reviewerBlock,
+                VibeCodingManager._getLLMVisibleText({ content: fullContent, reasoning: fullReasoning })
+            ),
+            this.abortController.signal,
+            { endpointOverride: 'local', modelOverride: reviewerModel }
+        );
+
+        if (this.abortController.signal.aborted) return;
+
+        let reviewerVisibleText = VibeCodingManager._getLLMVisibleText(reviewerResult);
+        let score = this._parseScore(reviewerVisibleText);
+
+        if (score === null && reviewerVisibleText.trim()) {
+            const recoveryModel = this._getScoreRecoveryModel(reviewerModel, coderModel);
+            this._log(`Итерация ${iterNum} — ревьюер не вернул оценку, запрашиваю короткую оценку через ${recoveryModel}…`, 'warn');
+
+            const recoveryResult = await this.llm.callLLM(
+                VibeCodingManager._buildScoreRecoveryMessages({
+                    langLabel,
+                    task: this.currentTask,
+                    code: codeOnly,
+                    review: reviewerVisibleText
+                }),
+                () => {},
+                this.abortController.signal,
+                {
+                    endpointOverride: 'local',
+                    modelOverride: recoveryModel,
+                    temperature: 0,
+                    maxTokens: 512
+                }
+            );
+
+            if (this.abortController.signal.aborted) return;
+
+            const recoveredReview = VibeCodingManager._createRecoveredReview(
+                VibeCodingManager._getLLMVisibleText(recoveryResult),
+                reviewerVisibleText
+            );
+            const recoveredScore = this._parseScore(recoveredReview);
+            if (recoveredScore !== null) {
+                reviewerVisibleText = recoveredReview;
+                score = recoveredScore;
+                this._updateIterBody(reviewerBlock, reviewerVisibleText);
+                this._log(`Итерация ${iterNum} — оценка восстановлена: ${score}/10`, 'info');
+            }
+        }
+
+        this._finalizeReviewerIter(reviewerBlock, iterNum, score, reviewerVisibleText);
+
+        if (score === null) {
+            this._log(`Итерация ${iterNum} — оценку распарсить не удалось (ожидаю «ОЦЕНКА: N/10» в первой строке)`, 'warn');
+        } else {
+            const lvl = score >= this.state.settings.vibeScoreThreshold ? 'ok' : (score >= 7 ? 'info' : 'warn');
+            this._log(`Итерация ${iterNum} — оценка ${score}/10`, lvl);
+        }
+
+        this.iterations.push({
+            num: iterNum,
+            code: codeOnly,
+            review: reviewerVisibleText,
+            score: score,
+            coderModel,
+            reviewerModel
+        });
+    }
+
+    stop() {
+        if (this.abortController) {
+            this.abortController.abort();
+        }
+    }
+
+    _setRunning(isRunning) {
+        this.isRunning = isRunning;
+        const btnRun = document.getElementById('btn-vibe-run');
+        const btnStop = document.getElementById('btn-vibe-stop');
+        const btnReset = document.getElementById('btn-vibe-reset');
+        const btnClearLog = document.getElementById('btn-vibe-clear-log');
+        const taskInput = document.getElementById('vibe-task');
+        const langSelect = document.getElementById('vibe-lang');
+        if (isRunning) {
+            btnRun.style.display = 'none';
+            btnStop.style.display = 'inline-flex';
+            taskInput.disabled = true;
+            langSelect.disabled = true;
+            if (btnReset) btnReset.disabled = true;
+            if (btnClearLog) btnClearLog.disabled = true;
+        } else {
+            btnRun.style.display = 'inline-flex';
+            btnStop.style.display = 'none';
+            taskInput.disabled = false;
+            langSelect.disabled = false;
+            if (btnReset) btnReset.disabled = false;
+            if (btnClearLog) btnClearLog.disabled = false;
+            this._updateRunButton();
+        }
+    }
+
+    /* ---------- Fallback modal ---------- */
+    _showFallbackModal() {
+        const best = this.iterations.reduce((acc, it) =>
+            (it.score !== null && (!acc || it.score > acc.score)) ? it : acc, null);
+        const last = this.iterations[this.iterations.length - 1];
+        const threshold = this.state.settings.vibeScoreThreshold || 9;
+        const more = this.state.settings.vibeMaxIterations || 3;
+
+        const bestNum = best ? String(best.num) : '?';
+        const bestScoreLabel = best ? `${best.score}/10` : '—';
+        const lastScoreLabel = last && last.score !== null ? `${last.score}/10` : 'не определена';
+
+        // Строим текст безопасно через createElement — без innerHTML с переменными
+        const textEl = document.getElementById('vibe-fallback-text');
+        textEl.innerHTML = '';
+        const sentence1 = document.createElement('span');
+        sentence1.append('За ');
+        const b1 = document.createElement('b'); b1.textContent = String(this.iterations.length); sentence1.appendChild(b1);
+        sentence1.append(' итераций оценка так и не достигла порога ');
+        const b2 = document.createElement('b'); b2.textContent = `${threshold}/10`; sentence1.appendChild(b2);
+        sentence1.append('. Лучшая попытка — итерация ');
+        const b3 = document.createElement('b'); b3.textContent = bestNum; sentence1.appendChild(b3);
+        sentence1.append(' с оценкой ');
+        const b4 = document.createElement('b'); b4.textContent = bestScoreLabel; sentence1.appendChild(b4);
+        sentence1.append('. Последняя оценка — ');
+        const b5 = document.createElement('b'); b5.textContent = lastScoreLabel; sentence1.appendChild(b5);
+        sentence1.append('.');
+        textEl.appendChild(sentence1);
+
+        // Динамический текст кнопки «Продолжить»
+        const continueBtn = document.getElementById('btn-vibe-continue');
+        if (continueBtn) continueBtn.textContent = `Продолжить ещё ${more} итер.`;
+
+        document.getElementById('vibe-fallback-overlay').style.display = 'flex';
+        this._log(`Порог не достигнут за ${this.iterations.length} итераций. Жду решения пользователя.`, 'warn');
+        this._updateRunButton();
+    }
+
+    _hideFallbackModal() {
+        document.getElementById('vibe-fallback-overlay').style.display = 'none';
+        this._updateRunButton();
+    }
+
+    async _fallbackContinue() {
+        this._hideFallbackModal();
+        const more = this.state.settings.vibeMaxIterations || 3;
+        this._log(`Пользователь выбрал: ещё ${more} итераций`, 'info');
+        await this._loop(more);
+    }
+
+    _fallbackTake(which) {
+        this._hideFallbackModal();
+        let target;
+        if (which === 'best') {
+            target = this.iterations.reduce((acc, it) =>
+                (it.score !== null && (!acc || it.score > acc.score)) ? it : acc, null) || this.iterations[this.iterations.length - 1];
+        } else {
+            target = this.iterations[this.iterations.length - 1];
+        }
+        if (!target) return;
+        // Маркируем «Лучший» только если оценка известна и это не последняя итерация
+        const isLast = target === this.iterations[this.iterations.length - 1];
+        if (which === 'best' && target.score !== null && !isLast) {
+            this._markBest(target.num);
+            this._log(`Принят лучший вариант: итерация ${target.num} (${target.score}/10)`, 'ok');
+        } else {
+            this._markFinal(target.num);
+            const scoreLabel = target.score === null ? '?' : `${target.score}/10`;
+            // Если "best" сошёлся с последней — это и есть финал, говорим прямо.
+            const labelKind = (which === 'best' && !isLast) ? 'лучший' : 'финальный';
+            this._log(`Принят ${labelKind} вариант: итерация ${target.num} (${scoreLabel})`, 'ok');
+        }
+        Toast.show(`Готово — итерация ${target.num} выбрана как финал`);
+    }
+
+    _fallbackAbort() {
+        this._hideFallbackModal();
+        this._log('Пользователь завершил без принятия результата', 'warn');
+    }
+
+    /* ---------- Settings page integration ---------- */
+    bindSettingsCard() {
+        const fetchBtn = document.getElementById('btn-vibe-fetch');
+        if (!fetchBtn) return;
+
+        fetchBtn.addEventListener('click', () => this._fetchModels());
+
+        document.getElementById('vibe-coder-model').addEventListener('change', (e) => {
+            this.state.settings.vibeCoderModel = e.target.value;
+            this.state.saveSettings();
+            this._renderBanner();
+            this._updateRunButton();
+        });
+        document.getElementById('vibe-reviewer-model').addEventListener('change', (e) => {
+            this.state.settings.vibeReviewerModel = e.target.value;
+            this.state.saveSettings();
+            this._renderBanner();
+            this._updateRunButton();
+        });
+
+        document.getElementById('vibe-max-iter').addEventListener('change', (e) => {
+            this.state.settings.vibeMaxIterations = parseInt(e.target.value, 10) || 3;
+            this.state.saveSettings();
+            this._renderBanner();
+        });
+        document.getElementById('vibe-threshold').addEventListener('change', (e) => {
+            this.state.settings.vibeScoreThreshold = parseInt(e.target.value, 10) || 9;
+            this.state.saveSettings();
+            this._renderBanner();
+        });
+
+        const coderTA = document.getElementById('vibe-coder-prompt-settings');
+        const reviewerTA = document.getElementById('vibe-reviewer-prompt-settings');
+        coderTA.addEventListener('blur', () => {
+            const val = coderTA.value.trim();
+            this.state.settings.vibeCoderPrompt = (val === DEFAULT_VIBE_CODER_PROMPT) ? '' : val;
+            this.state.saveSettings();
+            document.getElementById('vibe-coder-prompt').value = val || DEFAULT_VIBE_CODER_PROMPT;
+        });
+        reviewerTA.addEventListener('blur', () => {
+            const val = reviewerTA.value.trim();
+            this.state.settings.vibeReviewerPrompt = (val === DEFAULT_VIBE_REVIEWER_PROMPT) ? '' : val;
+            this.state.saveSettings();
+            document.getElementById('vibe-reviewer-prompt').value = val || DEFAULT_VIBE_REVIEWER_PROMPT;
+        });
+
+        document.querySelectorAll('[data-vibe-reset-settings]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const which = btn.dataset.vibeResetSettings;
+                const def = which === 'coder' ? DEFAULT_VIBE_CODER_PROMPT : DEFAULT_VIBE_REVIEWER_PROMPT;
+                const taId = which === 'coder' ? 'vibe-coder-prompt-settings' : 'vibe-reviewer-prompt-settings';
+                document.getElementById(taId).value = def;
+                const field = which === 'coder' ? 'vibeCoderPrompt' : 'vibeReviewerPrompt';
+                this.state.settings[field] = '';
+                this.state.saveSettings();
+                document.getElementById(which === 'coder' ? 'vibe-coder-prompt' : 'vibe-reviewer-prompt').value = def;
+                Toast.show('Промпт восстановлен по умолчанию');
+            });
+        });
+    }
+
+    renderSettingsCard() {
+        const s = this.state.settings;
+        const maxIterEl = document.getElementById('vibe-max-iter');
+        if (!maxIterEl) return;
+        maxIterEl.value = String(s.vibeMaxIterations || 3);
+        document.getElementById('vibe-threshold').value = String(s.vibeScoreThreshold || 9);
+        document.getElementById('vibe-coder-prompt-settings').value = (s.vibeCoderPrompt || '').trim() || DEFAULT_VIBE_CODER_PROMPT;
+        document.getElementById('vibe-reviewer-prompt-settings').value = (s.vibeReviewerPrompt || '').trim() || DEFAULT_VIBE_REVIEWER_PROMPT;
+
+        // Если основная карточка уже загрузила модели, переиспользуем её кэш
+        if (this.app._localModelsCache && Object.keys(this.app._localModelsCache).length > 0
+            && Object.keys(this._localModelsCache || {}).length === 0) {
+            this._localModelsCache = { ...this.app._localModelsCache };
+            const hint = document.getElementById('vibe-fetch-hint');
+            if (hint) hint.textContent = `найдено: ${Object.keys(this._localModelsCache).length}`;
+        }
+
+        this._renderModelDropdowns();
+    }
+
+    _renderModelDropdowns() {
+        const cache = this._localModelsCache || {};
+        const ids = Object.keys(cache);
+        const coderSel = document.getElementById('vibe-coder-model');
+        const reviewerSel = document.getElementById('vibe-reviewer-model');
+        if (!coderSel || !reviewerSel) return;
+
+        const s = this.state.settings;
+
+        // Сборка через appendChild — без сериализации в HTML, XSS-безопасно.
+        const populate = (sel, selected) => {
+            sel.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            if (ids.length === 0) {
+                placeholder.textContent = '-- Нажмите «Обновить» --';
+                sel.appendChild(placeholder);
+                if (selected) {
+                    const opt = document.createElement('option');
+                    opt.value = selected;
+                    opt.textContent = `${selected} (сохранено, не загружено)`;
+                    opt.selected = true;
+                    sel.appendChild(opt);
+                }
+                return;
+            }
+            placeholder.textContent = `-- Выберите модель (${ids.length}) --`;
+            sel.appendChild(placeholder);
+            ids.forEach(id => {
+                const m = cache[id];
+                let label = m.name;
+                if (m.contextLength) label += ` [${Math.round(m.contextLength / 1024)}K]`;
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = label;
+                if (id === selected) opt.selected = true;
+                sel.appendChild(opt);
+            });
+            if (selected && !ids.includes(selected)) {
+                const opt = document.createElement('option');
+                opt.value = selected;
+                opt.textContent = `${selected} (сохранено, не в списке)`;
+                opt.selected = true;
+                sel.appendChild(opt);
+            }
+        };
+
+        populate(coderSel, s.vibeCoderModel);
+        populate(reviewerSel, s.vibeReviewerModel);
+    }
+
+    async _fetchModels() {
+        const urlInput = document.getElementById('setting-local-url');
+        if (urlInput && urlInput.value.trim()) {
+            this.state.settings.localUrl = urlInput.value.trim();
+        }
+
+        const btn = document.getElementById('btn-vibe-fetch');
+        const hint = document.getElementById('vibe-fetch-hint');
+        const orig = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner"></span> Загрузка...';
+        btn.disabled = true;
+        hint.textContent = '';
+
+        try {
+            const models = await this.llm.fetchLocalModels();
+            this._localModelsCache = {};
+            models.forEach(m => this._localModelsCache[m.id] = m);
+            this._renderModelDropdowns();
+            hint.textContent = `найдено: ${models.length}`;
+
+            // Синхронизация с основной карточкой настроек
+            this.app._localModelsCache = { ...this._localModelsCache };
+            const mainSelect = document.getElementById('setting-local-model-select');
+            const mainHint = document.getElementById('local-model-hint');
+            if (mainSelect) {
+                mainSelect.innerHTML = '';
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = models.length === 0
+                    ? 'Модели не найдены'
+                    : `-- Выберите модель (${models.length}) --`;
+                mainSelect.appendChild(placeholder);
+                models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    let label = m.name;
+                    if (m.contextLength) label += ` [${Math.round(m.contextLength / 1024)}K]`;
+                    if (m.owned_by) label += ` (${m.owned_by})`;
+                    opt.textContent = label;
+                    mainSelect.appendChild(opt);
+                });
+                const current = this.state.settings.localModel;
+                if (current) mainSelect.value = current;
+                if (this.app.updateLocalModelTypeIndicator) {
+                    this.app.updateLocalModelTypeIndicator(mainSelect.value);
+                }
+            }
+            if (mainHint) mainHint.textContent = `(найдено: ${models.length})`;
+
+            Toast.show(`Найдено моделей: ${models.length}`);
+        } catch (err) {
+            hint.textContent = `ошибка: ${err.message}`;
+            Toast.show(`Не удалось загрузить модели: ${err.message}`, 'error', 6000);
+        } finally {
+            btn.innerHTML = orig;
+            btn.disabled = false;
+        }
+    }
+}
+
+/* ============================================================
    MAIN APPLICATION
    ============================================================ */
 class Application {
@@ -1309,6 +2656,11 @@ class Application {
         this.bindMobileMenu();
         this.bindSidebarToggle();
         this.bindHelpLinks();
+
+        // Vibecoding
+        this.vibe = new VibeCodingManager(this);
+        this.vibe.init();
+        this.vibe.bindSettingsCard();
 
         this.renderActionButtons();
         this.renderSettingsForm();
@@ -1339,6 +2691,15 @@ class Application {
 
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.getElementById(`page-${page}`)?.classList.add('active');
+
+        // Refresh page-specific state
+        if (page === 'vibecode' && this.vibe) {
+            this.vibe._renderBanner();
+            this.vibe._updateRunButton();
+        }
+        if (page === 'settings' && this.vibe) {
+            this.vibe.renderSettingsCard();
+        }
 
         // Close mobile sidebar
         document.getElementById('sidebar').classList.remove('open');
@@ -1381,6 +2742,56 @@ class Application {
             const collapsed = document.body.classList.contains('sidebar-collapsed');
             localStorage.setItem('codesentinel_sidebar_collapsed', collapsed);
         });
+    }
+
+    _isKnownLocalDefaultUrl(url) {
+        const normalize = (value) => String(value || '').trim()
+            .replace(/\/+$/, '')
+            .replace(/\/v1$/i, '')
+            .replace(/\/api$/i, '');
+        const current = normalize(url);
+        try {
+            const parsed = new URL(current);
+            const loopbackHosts = ['localhost', '127.0.0.1', '[::1]', '::1'];
+            const defaultPorts = Object.values(LOCAL_PROVIDER_CONFIG)
+                .map(p => new URL(p.defaultUrl).port)
+                .filter(Boolean);
+            if (loopbackHosts.includes(parsed.hostname) && defaultPorts.includes(parsed.port)) {
+                return true;
+            }
+        } catch { /* ignore malformed/incomplete input */ }
+        return [DEFAULT_LOCAL_URL, ...Object.values(LOCAL_PROVIDER_CONFIG).map(p => p.defaultUrl)]
+            .map(normalize)
+            .includes(current);
+    }
+
+    _setLocalProviderControlState({ providerSelectId, urlInputId, modelSelectId, hintId, settings, replaceDefaultUrl = false }) {
+        const providerSelect = document.getElementById(providerSelectId);
+        const urlInput = document.getElementById(urlInputId);
+        const provider = providerSelect?.value || settings.localProvider || LLMService.inferLocalProviderFromUrl(settings.localUrl);
+        const config = LLMService.getLocalProviderConfig(provider);
+
+        if (providerSelect) providerSelect.value = provider;
+        settings.localProvider = provider;
+
+        if (urlInput) {
+            const currentUrl = urlInput.value.trim();
+            urlInput.placeholder = config.defaultUrl;
+            if (replaceDefaultUrl && (!currentUrl || this._isKnownLocalDefaultUrl(currentUrl))) {
+                urlInput.value = config.defaultUrl;
+            } else if (!currentUrl) {
+                urlInput.value = settings.localUrl || config.defaultUrl;
+            }
+            settings.localUrl = urlInput.value.trim();
+        }
+
+        if (replaceDefaultUrl) {
+            settings.localModel = '';
+            const modelSelect = document.getElementById(modelSelectId);
+            if (modelSelect) modelSelect.innerHTML = '<option value="">-- Нажмите "Загрузить" --</option>';
+            const hint = document.getElementById(hintId);
+            if (hint) hint.textContent = '';
+        }
     }
 
     /* ------ Analysis Page ------ */
@@ -1653,12 +3064,16 @@ class Application {
         const prompts = this.state.getPromptsForRole(this.state.selectedRole, this.state.selectedLang);
 
         const esc = MarkdownRenderer.escapeHtml;
-        container.innerHTML = prompts.map(p => `
-            <button class="action-btn ${this.state.selectedAction === p.id ? 'active' : ''}"
-                    data-action-id="${esc(p.id)}">
-                ${esc(p.actionName)}
-            </button>
-        `).join('');
+        container.innerHTML = prompts.map(p => {
+            const actionId = esc(p.id);
+            const actionName = esc(p.actionName || '');
+            return `
+                <button class="action-btn ${this.state.selectedAction === p.id ? 'active' : ''}"
+                        data-action-id="${actionId}">
+                    ${actionName}
+                </button>
+            `;
+        }).join('');
 
         container.querySelectorAll('.action-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -1701,6 +3116,7 @@ class Application {
 
         const avatarText = msg.role === 'user' ? 'Вы' : 'AI';
         const name = msg.role === 'user' ? 'Вы' : 'AI сканер';
+        const time = MarkdownRenderer.escapeHtml(msg.time || '');
 
         const esc = MarkdownRenderer.escapeHtml;
         const metaHtml = msg.meta ? `<span class="msg-meta">${esc(msg.meta)}</span>` : '';
@@ -1713,7 +3129,7 @@ class Application {
             <div class="msg-body">
                 <div class="msg-header">
                     <span class="msg-name">${esc(name)}</span>
-                    <span class="msg-time">${esc(msg.time)}</span>
+                    <span class="msg-time">${time}</span>
                     ${metaHtml}
                     ${copyBtn}
                 </div>
@@ -2491,6 +3907,19 @@ class Application {
             this.fetchLocalModels();
         });
 
+        document.getElementById('setting-local-provider').addEventListener('change', () => {
+            this._setLocalProviderControlState({
+                providerSelectId: 'setting-local-provider',
+                urlInputId: 'setting-local-url',
+                modelSelectId: 'setting-local-model-select',
+                hintId: 'local-model-hint',
+                settings: this.state.settings,
+                replaceDefaultUrl: true
+            });
+            this.updateLocalModelTypeIndicator('');
+            this.updateConnectionStatus();
+        });
+
         // Local model dropdown -> detect reasoning type
         document.getElementById('setting-local-model-select').addEventListener('change', (e) => {
             this.updateLocalModelTypeIndicator(e.target.value);
@@ -2602,7 +4031,15 @@ class Application {
         const s = this.state.settings;
         document.getElementById('setting-api-key').value = s.cloudApiKey || '';
         document.getElementById('setting-cloud-url').value = s.cloudUrl || 'https://api.deepseek.com';
-        document.getElementById('setting-local-url').value = s.localUrl || 'http://172.16.33.12:9997';
+        document.getElementById('setting-local-provider').value = s.localProvider || LLMService.inferLocalProviderFromUrl(s.localUrl);
+        document.getElementById('setting-local-url').value = s.localUrl || LLMService.getLocalProviderConfig(s.localProvider).defaultUrl;
+        this._setLocalProviderControlState({
+            providerSelectId: 'setting-local-provider',
+            urlInputId: 'setting-local-url',
+            modelSelectId: 'setting-local-model-select',
+            hintId: 'local-model-hint',
+            settings: s
+        });
 
         // Если есть сохранённая локальная модель — пре-наполняем select временной опцией,
         // чтобы пользователь видел текущий выбор без клика на "Загрузить список".
@@ -2674,6 +4111,9 @@ class Application {
             cloudSettings.classList.remove('disabled');
             localSettings.classList.add('disabled');
         }
+
+        // Vibecode card
+        if (this.vibe) this.vibe.renderSettingsCard();
     }
 
     saveSettingsFromForm() {
@@ -2681,7 +4121,9 @@ class Application {
         const checkedRadio = document.querySelector('input[name="deepseek-model"]:checked');
         this.state.settings.cloudModel = checkedRadio ? checkedRadio.value : 'deepseek-chat';
         this.state.settings.cloudUrl = document.getElementById('setting-cloud-url').value.trim() || 'https://api.deepseek.com';
-        this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim() || 'http://172.16.33.12:9997';
+        this.state.settings.localProvider = document.getElementById('setting-local-provider').value || DEFAULT_LOCAL_PROVIDER;
+        this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim()
+            || LLMService.getLocalProviderConfig(this.state.settings.localProvider).defaultUrl;
         // Не перезаписываем localModel пустым значением: если пользователь открыл настройки
         // без "Загрузить список", select пуст — оставляем сохранённое значение.
         const localModelVal = document.getElementById('setting-local-model-select').value;
@@ -2744,8 +4186,10 @@ class Application {
     }
 
     async fetchLocalModels() {
-        // Save the current URL first
-        this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim() || 'http://172.16.33.12:9997';
+        // Save the current provider and URL first
+        this.state.settings.localProvider = document.getElementById('setting-local-provider').value || DEFAULT_LOCAL_PROVIDER;
+        this.state.settings.localUrl = document.getElementById('setting-local-url').value.trim()
+            || LLMService.getLocalProviderConfig(this.state.settings.localProvider).defaultUrl;
 
         const btn = document.getElementById('btn-fetch-models');
         const origHTML = btn.innerHTML;
@@ -2795,6 +4239,15 @@ class Application {
 
             // Show type indicator for selected model
             this.updateLocalModelTypeIndicator(select.value);
+
+            // Синхронизация кэша моделей с Vibecode-карточкой —
+            // чтобы пользователю не пришлось жать «Обновить» дважды
+            if (this.vibe) {
+                this.vibe._localModelsCache = { ...this._localModelsCache };
+                this.vibe._renderModelDropdowns();
+                const vibeHint = document.getElementById('vibe-fetch-hint');
+                if (vibeHint) vibeHint.textContent = `найдено: ${models.length}`;
+            }
 
             this.updateConnectionStatus(true);
             Toast.show(`Найдено моделей: ${models.length}`);
@@ -2885,15 +4338,18 @@ class Application {
 
         const esc = MarkdownRenderer.escapeHtml;
         tbody.innerHTML = this.state.prompts.map(p => {
-            const role = ROLES[p.role] || ROLES.developer;
-            const langLabel = p.language ? (LANGUAGES[p.language] || p.language) : '';
-            // role.name / role.team / role.icon — из ROLES (внутренний справочник), p.role — ключ ROLES,
-            // но всё равно экранируем на случай тампера с localStorage.
+            const roleKey = ROLES[p.role] ? p.role : 'developer';
+            const role = ROLES[roleKey];
+            const promptId = esc(p.id);
+            const actionName = esc(p.actionName || '');
+            const languageName = p.language ? esc(LANGUAGES[p.language] || p.language) : '';
+            const systemPrompt = String(p.systemPrompt || '');
+            const contextFile = String(p.contextFile || '');
             return `
-                <tr data-prompt-id="${esc(p.id)}">
+                <tr data-prompt-id="${promptId}">
                     <td>
                         <div class="table-role-cell">
-                            <div class="table-role-icon ${esc(p.role)}">
+                            <div class="table-role-icon ${esc(roleKey)}">
                                 <svg class="icon"><use href="#${esc(role.icon)}"/></svg>
                             </div>
                             <div>
@@ -2902,18 +4358,18 @@ class Application {
                             </div>
                         </div>
                     </td>
-                    <td><span class="table-badge ${esc(p.role)}">${esc(p.actionName)}</span>${p.language ? ` <span class="label-badge">${esc(langLabel)}</span>` : ''}</td>
-                    <td><div class="table-prompt-text" title="${esc(p.systemPrompt)}">${esc((p.systemPrompt || '').substring(0, 150))}...</div></td>
-                    <td>${p.contextFile
-                        ? `<span class="table-file-badge"><svg class="icon"><use href="#i-attach"/></svg>${esc(p.contextFile)}</span>`
+                    <td><span class="table-badge ${esc(roleKey)}">${actionName}</span>${p.language ? ` <span class="label-badge">${languageName}</span>` : ''}</td>
+                    <td><div class="table-prompt-text" title="${esc(systemPrompt)}">${esc(systemPrompt.substring(0, 150))}...</div></td>
+                    <td>${contextFile
+                        ? `<span class="table-file-badge"><svg class="icon"><use href="#i-attach"/></svg>${esc(contextFile)}</span>`
                         : '<span style="color:var(--text-muted)">—</span>'
                     }</td>
                     <td>
                         <div class="table-actions">
-                            <button class="table-action-btn edit" data-id="${esc(p.id)}" title="Редактировать">
+                            <button class="table-action-btn edit" data-id="${promptId}" title="Редактировать">
                                 <svg class="icon"><use href="#i-edit"/></svg>
                             </button>
-                            <button class="table-action-btn delete" data-id="${esc(p.id)}" title="Удалить">
+                            <button class="table-action-btn delete" data-id="${promptId}" title="Удалить">
                                 <svg class="icon"><use href="#i-delete"/></svg>
                             </button>
                         </div>
@@ -3189,20 +4645,23 @@ class Application {
 
         const esc = MarkdownRenderer.escapeHtml;
         container.innerHTML = this.state.history.map(entry => {
-            const role = ROLES[entry.role] || ROLES.developer;
+            const roleKey = ROLES[entry.role] ? entry.role : 'developer';
+            const role = ROLES[roleKey];
             const date = new Date(entry.timestamp);
             const dateStr = date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
             const timeStr = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-            const lang = LANGUAGES[entry.language] || entry.language;
-            const snippet = entry.codeSnippet ? entry.codeSnippet.substring(0, 60) + '...' : '';
+            const lang = MarkdownRenderer.escapeHtml(LANGUAGES[entry.language] || entry.language || '');
+            const action = MarkdownRenderer.escapeHtml(entry.action || '');
+            const snippet = entry.codeSnippet ? MarkdownRenderer.escapeHtml(entry.codeSnippet.substring(0, 60) + '...') : '';
+            const historyId = MarkdownRenderer.escapeHtml(entry.id);
 
             return `
-                <div class="history-item" data-history-id="${esc(entry.id)}">
-                    <div class="history-item-icon ${esc(entry.role)}">
+                <div class="history-item" data-history-id="${historyId}">
+                    <div class="history-item-icon ${esc(roleKey)}">
                         <svg class="icon"><use href="#${esc(role.icon)}"/></svg>
                     </div>
                     <div class="history-item-body">
-                        <div class="history-item-title">${esc(role.name)} — ${esc(entry.action)}</div>
+                        <div class="history-item-title">${esc(role.name)} — ${action}</div>
                         <div class="history-item-meta">
                             <span>${esc(lang)}</span>
                             <span>${esc(dateStr)} ${esc(timeStr)}</span>
@@ -3210,7 +4669,7 @@ class Application {
                         </div>
                     </div>
                     <div class="history-item-actions">
-                        <button class="table-action-btn delete history-delete-btn" data-id="${esc(entry.id)}" title="Удалить">
+                        <button class="table-action-btn delete history-delete-btn" data-id="${historyId}" title="Удалить">
                             <svg class="icon"><use href="#i-delete"/></svg>
                         </button>
                     </div>
@@ -3387,9 +4846,25 @@ class Application {
                     this.closeHistoryModal();
                     return;
                 }
+                // Vibecode fallback modal — закрываем через менеджер,
+                // чтобы корректно обновилось состояние Run-кнопки.
+                const vibeFallback = document.getElementById('vibe-fallback-overlay');
+                if (vibeFallback && vibeFallback.style.display !== 'none' && vibeFallback.style.display !== '') {
+                    if (this.vibe) {
+                        this.vibe._hideFallbackModal();
+                    } else {
+                        vibeFallback.style.display = 'none';
+                    }
+                    return;
+                }
+
                 // Stop generation
                 if (this.state.isGenerating) {
                     this.stopGeneration();
+                }
+                // Stop vibecode cycle
+                if (this.vibe && this.vibe.isRunning) {
+                    this.vibe.stop();
                 }
             }
         });
@@ -3517,7 +4992,8 @@ const DEFAULT_SUPPORT_SYSTEM_PROMPT = `Ты — виртуальный асси�
 - Нажать "Проверить подключение"
 
 **Для локальных моделей:**
-- Указать адрес сервера (например: http://172.16.33.12:9997)
+- Выбрать тип локального API: LM Studio, Ollama или Xinference
+- Указать фактический адрес API-сервера (LM Studio: http://localhost:1234, Ollama: http://localhost:11434, Xinference: http://127.0.0.1:9997 или корпоративный адрес)
 - Нажать "Загрузить список" для автообнаружения моделей
 - Выбрать модель из списка
 
@@ -3579,7 +5055,8 @@ class AdminManager {
             cloudApiKey: '',
             cloudModel: 'deepseek-chat',
             cloudUrl: 'https://api.deepseek.com',
-            localUrl: 'http://172.16.33.12:9997',
+            localProvider: DEFAULT_LOCAL_PROVIDER,
+            localUrl: DEFAULT_LOCAL_URL,
             localModel: '',
             temperature: 0.2,
             maxTokens: 768,
@@ -3591,12 +5068,18 @@ class AdminManager {
             localStorage.getItem('codesentinel_admin_settings'),
             (p) => {
                 if (!p || typeof p !== 'object') return null;
+                const localUrl = Schema.string(p.localUrl, defaults.localUrl, 500);
                 return {
                     mode: Schema.oneOf(p.mode, ['cloud', 'local'], defaults.mode),
                     cloudApiKey: Schema.string(p.cloudApiKey, defaults.cloudApiKey, 500),
                     cloudModel: Schema.string(p.cloudModel, defaults.cloudModel, 100),
                     cloudUrl: Schema.string(p.cloudUrl, defaults.cloudUrl, 500),
-                    localUrl: Schema.string(p.localUrl, defaults.localUrl, 500),
+                    localProvider: Schema.oneOf(
+                        p.localProvider,
+                        Object.keys(LOCAL_PROVIDER_CONFIG),
+                        LLMService.inferLocalProviderFromUrl(localUrl)
+                    ),
+                    localUrl,
                     localModel: Schema.string(p.localModel, defaults.localModel, 200),
                     temperature: Schema.number(p.temperature, defaults.temperature, { min: 0, max: 2 }),
                     maxTokens: Schema.integer(p.maxTokens, defaults.maxTokens, { min: 64, max: 16384 }),
@@ -3697,7 +5180,15 @@ class AdminManager {
         });
 
         // Local
-        document.getElementById('admin-local-url').value = s.localUrl || 'http://172.16.33.12:9997';
+        document.getElementById('admin-local-provider').value = s.localProvider || LLMService.inferLocalProviderFromUrl(s.localUrl);
+        document.getElementById('admin-local-url').value = s.localUrl || LLMService.getLocalProviderConfig(s.localProvider).defaultUrl;
+        this.app._setLocalProviderControlState({
+            providerSelectId: 'admin-local-provider',
+            urlInputId: 'admin-local-url',
+            modelSelectId: 'admin-local-model-select',
+            hintId: 'admin-local-model-hint',
+            settings: s
+        });
         const select = document.getElementById('admin-local-model-select');
         if (s.localModel) {
             const existing = select.querySelector(`option[value="${CSS.escape(s.localModel)}"]`);
@@ -3749,7 +5240,9 @@ class AdminManager {
         this.settings.cloudUrl = document.getElementById('admin-cloud-url').value.trim() || 'https://api.deepseek.com';
         const checkedRadio = document.querySelector('input[name="admin-deepseek-model"]:checked');
         this.settings.cloudModel = checkedRadio ? checkedRadio.value : 'deepseek-chat';
-        this.settings.localUrl = document.getElementById('admin-local-url').value.trim() || 'http://172.16.33.12:9997';
+        this.settings.localProvider = document.getElementById('admin-local-provider').value || DEFAULT_LOCAL_PROVIDER;
+        this.settings.localUrl = document.getElementById('admin-local-url').value.trim()
+            || LLMService.getLocalProviderConfig(this.settings.localProvider).defaultUrl;
         // Не затираем сохранённую модель пустым select (если "Загрузить список" не нажат).
         const adminLocalModelVal = document.getElementById('admin-local-model-select').value;
         if (adminLocalModelVal) {
@@ -3871,6 +5364,17 @@ class AdminManager {
             this._fetchLocalModels();
         });
 
+        document.getElementById('admin-local-provider').addEventListener('change', () => {
+            this.app._setLocalProviderControlState({
+                providerSelectId: 'admin-local-provider',
+                urlInputId: 'admin-local-url',
+                modelSelectId: 'admin-local-model-select',
+                hintId: 'admin-local-model-hint',
+                settings: this.settings,
+                replaceDefaultUrl: true
+            });
+        });
+
         // Test connection
         document.getElementById('admin-btn-test-connection').addEventListener('click', () => {
             this._testConnection();
@@ -3964,7 +5468,9 @@ class AdminManager {
     }
 
     async _fetchLocalModels() {
-        this.settings.localUrl = document.getElementById('admin-local-url').value.trim() || 'http://172.16.33.12:9997';
+        this.settings.localProvider = document.getElementById('admin-local-provider').value || DEFAULT_LOCAL_PROVIDER;
+        this.settings.localUrl = document.getElementById('admin-local-url').value.trim()
+            || LLMService.getLocalProviderConfig(this.settings.localProvider).defaultUrl;
         const btn = document.getElementById('admin-btn-fetch-models');
         const origHTML = btn.innerHTML;
         btn.innerHTML = '<span class="spinner"></span>';
@@ -3973,17 +5479,7 @@ class AdminManager {
         const hint = document.getElementById('admin-local-model-hint');
 
         try {
-            const baseUrl = this.settings.localUrl.replace(/\/+$/, '');
-            const response = await fetch(`${baseUrl}/v1/models`, {
-                method: 'GET',
-                signal: LLMService._createTimeoutSignal(10000)
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const json = await response.json();
-            const models = (json.data || json.models || []).map(m => ({
-                id: m.id || m.name || m.model,
-                name: m.id || m.name || m.model
-            })).filter(m => m.id);
+            const models = await this._fetchLocalModelsFromConfiguredProvider();
 
             select.innerHTML = `<option value="">-- Выберите модель (${models.length}) --</option>`;
             models.forEach(m => {
@@ -4003,6 +5499,28 @@ class AdminManager {
             btn.innerHTML = origHTML;
             btn.disabled = false;
         }
+    }
+
+    async _fetchLocalModelsFromConfiguredProvider() {
+        const provider = this.settings.localProvider || LLMService.inferLocalProviderFromUrl(this.settings.localUrl);
+        const config = LLMService.getLocalProviderConfig(provider);
+        let lastError = null;
+
+        for (const url of LLMService.buildLocalModelListUrls(this.settings)) {
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    signal: LLMService._createTimeoutSignal(10000)
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const json = await response.json();
+                return LLMService.parseLocalModels(json, provider);
+            } catch (err) {
+                lastError = err;
+            }
+        }
+
+        throw new Error(`${config.label}: ${lastError?.message || 'не удалось получить список моделей'}`);
     }
 
     // callSupportLLM удалён — SupportChat теперь использует this.admin.llm.callLLM напрямую
