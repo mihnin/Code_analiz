@@ -4055,6 +4055,65 @@ body.sidebar-collapsed .sidebar-toggle .icon {
     padding: 10px 12px 12px;
 }
 
+.vibe-auto-prompt {
+    width: calc(100% - 24px);
+    margin: 8px 12px 0;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(19, 91, 236, 0.06);
+}
+
+.vibe-auto-prompt-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.vibe-auto-prompt-title {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.vibe-auto-prompt-summary {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.vibe-auto-prompt-actions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+}
+
+.vibe-final-prompt {
+    display: none;
+    width: 100%;
+    min-height: 220px;
+    max-height: 360px;
+    margin-top: 10px;
+    padding: 10px;
+    resize: vertical;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.vibe-auto-prompt.is-open .vibe-final-prompt {
+    display: block;
+}
+
 /* --- Iterations List --- */
 .vibe-iter-list {
     flex: 0 0 auto;
@@ -4250,6 +4309,20 @@ body.sidebar-collapsed .sidebar-toggle .icon {
     font-size: 12px;
     line-height: 1.5;
     margin: 8px 0;
+}
+
+.vibe-iter-body .vibe-code-cell {
+    margin: 0;
+    padding: 12px 14px;
+    line-height: 1.42;
+    white-space: pre;
+    tab-size: 4;
+}
+
+.vibe-iter-body .vibe-code-cell code {
+    display: block;
+    white-space: pre;
+    font-size: 12px;
 }
 
 .vibe-iter-body code {

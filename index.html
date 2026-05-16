@@ -335,8 +335,6 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                                 <select id="vibe-lang">
                                     <option value="python" selected>Python</option>
                                     <option value="javascript">JavaScript</option>
-                                    <option value="abap">ABAP</option>
-                                    <option value="1c">1С</option>
                                 </select>
                                 <svg class="icon select-chevron"><use href="#i-chevron"/></svg>
                             </div>
@@ -377,6 +375,23 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                             <span class="vibe-prompt-hint">(нажмите чтобы раскрыть)</span>
                         </summary>
                         <textarea id="vibe-coder-prompt" class="vibe-prompt-textarea" spellcheck="false"></textarea>
+                        <div class="vibe-auto-prompt" data-vibe-prompt-preview="coder">
+                            <div class="vibe-auto-prompt-header">
+                                <div>
+                                    <span class="vibe-auto-prompt-title">Авто-добавляется для выбранного языка</span>
+                                    <p id="vibe-coder-auto-summary" class="vibe-auto-prompt-summary"></p>
+                                </div>
+                                <div class="vibe-auto-prompt-actions">
+                                    <button class="btn-ghost btn-sm" type="button" data-vibe-final-copy="coder" title="Скопировать итоговый промпт">
+                                        <svg class="icon"><use href="#i-copy"/></svg>
+                                    </button>
+                                    <button class="btn-outline btn-sm" type="button" data-vibe-final-toggle="coder">
+                                        Показать итоговый промпт
+                                    </button>
+                                </div>
+                            </div>
+                            <textarea id="vibe-coder-final-prompt" class="vibe-final-prompt" readonly spellcheck="false" aria-label="Итоговый системный промпт Кодера"></textarea>
+                        </div>
                         <div class="vibe-prompt-actions">
                             <button class="btn-outline btn-sm" data-vibe-reset="coder">
                                 <svg class="icon"><use href="#i-rerun"/></svg>
@@ -409,6 +424,23 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                             <span class="vibe-prompt-hint">(нажмите чтобы раскрыть)</span>
                         </summary>
                         <textarea id="vibe-reviewer-prompt" class="vibe-prompt-textarea" spellcheck="false"></textarea>
+                        <div class="vibe-auto-prompt" data-vibe-prompt-preview="reviewer">
+                            <div class="vibe-auto-prompt-header">
+                                <div>
+                                    <span class="vibe-auto-prompt-title">Авто-добавляется для выбранного языка</span>
+                                    <p id="vibe-reviewer-auto-summary" class="vibe-auto-prompt-summary"></p>
+                                </div>
+                                <div class="vibe-auto-prompt-actions">
+                                    <button class="btn-ghost btn-sm" type="button" data-vibe-final-copy="reviewer" title="Скопировать итоговый промпт">
+                                        <svg class="icon"><use href="#i-copy"/></svg>
+                                    </button>
+                                    <button class="btn-outline btn-sm" type="button" data-vibe-final-toggle="reviewer">
+                                        Показать итоговый промпт
+                                    </button>
+                                </div>
+                            </div>
+                            <textarea id="vibe-reviewer-final-prompt" class="vibe-final-prompt" readonly spellcheck="false" aria-label="Итоговый системный промпт Ревьюера"></textarea>
+                        </div>
                         <div class="vibe-prompt-actions">
                             <button class="btn-outline btn-sm" data-vibe-reset="reviewer">
                                 <svg class="icon"><use href="#i-rerun"/></svg>

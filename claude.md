@@ -14,9 +14,9 @@ No build tools, no npm, no bundlers. Open `index.html` directly in a browser. Fu
 
 **Syntax check**: `node -c app.js` (no runtime needed, just syntax validation). Run this after any non-trivial edit.
 
-**Build deploy archive** (for handing to a colleague / server admin): a small Python snippet bundles the 4 essentials + a Russian-language README into `AI-scanner.zip` under a single `AI-scanner/` folder. The archive **is committed to the repo** for direct GitHub-download distribution — rebuild it after any change to `index.html` / `styles.css` / `app.js` / `logo.png` to keep it in sync. Trade-off acknowledged: binary churn in git history; if that becomes a problem, switch to a release-asset workflow.
+**Build deploy archive** (for handing to a colleague / server admin): `AI-scanner.zip` contains only `index.html`, `styles.css`, `app.js`, and `logo.png` at the archive root. The archive **is committed to the repo** for direct GitHub-download distribution — rebuild it after any change to those files with `zip -q -FS AI-scanner.zip index.html styles.css app.js logo.png`. Trade-off acknowledged: binary churn in git history; if that becomes a problem, switch to a release-asset workflow.
 
-**Behavior tests**: `node --test tests/vibe_reasoning_fallback.test.js`. These cover VibeCoding reasoning fallback, JSON/recovered review scores, provider URL/model parsing, Python-only Jupyter guidance, copy payload behavior, and auto-collapse rules.
+**Behavior tests**: `node --test tests/vibe_reasoning_fallback.test.js`. These cover VibeCoding reasoning fallback, JSON/recovered review scores, provider URL/model parsing, Python/JavaScript language guidance, copy payload behavior, and auto-collapse rules.
 
 ## Architecture
 
@@ -44,7 +44,7 @@ Three-file SPA: `index.html` (structure + 30 inline SVG icons), `styles.css` (da
   - `_askOverflowAction(opts)` — when pre-flight detects token overflow, presents a three-way confirm: `cancel` / `force` / `chunk`. Returns one of those strings.
   - `_chunkCode(code, maxTokensPerChunk, language)` — splits code into chunks targeting `maxTokensPerChunk`, preferring **logical boundaries**: language-specific block starts (`def`/`class`/`function`/`Procedure`/`FORM`/`Процедура`) and blank lines. Hard fallback: line-by-line. Pure function, no DOM.
   - `_runAnalysisChunked({ code, prompt, systemPrompt, meta, chunkBudget })` — sequential chunked analysis. Each chunk gets its own system-prompt suffix (`## КОНТЕКСТ ЧАНКОВАНИЯ — Это часть N из M ...`) so the model knows context boundaries. Final summary-message points user at follow-up for aggregation.
-- **`VibeCodingManager`** — two-model coding loop. Coder writes code, Reviewer scores it, failed scores feed the next coder iteration. Handles reasoning-only LLM output, score parsing/recovery, JSON score fallback, iteration copy buttons, auto-collapsing old iterations, and Python/Jupyter-specific prompt guidance.
+- **`VibeCodingManager`** — two-model coding loop. Coder writes code, Reviewer scores it, failed scores feed the next coder iteration. Handles reasoning-only LLM output, score parsing/recovery, JSON score fallback, iteration copy buttons, auto-collapsing old iterations, and Python/Jupyter plus JavaScript-specific prompt guidance.
 
 ### Local Provider Support
 
@@ -89,11 +89,15 @@ VibeCoding is a separate page with a two-model cycle:
 Important implementation details:
 - Settings keys: `vibeCoderModel`, `vibeReviewerModel`, `vibeMaxIterations`, `vibeScoreThreshold`, `vibeCoderPrompt`, `vibeReviewerPrompt`.
 - Coder and Reviewer always use the local provider configured in the main settings.
+- VibeCoding language selector intentionally exposes only `python` and `javascript` for now. ABAP and 1C remain supported in the main analysis flow, but are hidden from VibeCoding until dedicated coder/reviewer prompts exist.
 - Reviewer score parsing accepts `ОЦЕНКА: N/10`, `SCORE: N/10`, bare `N/10`, and strict/fenced JSON such as `{"score": 8}`.
 - If the review text exists but score parsing fails, `_buildScoreRecoveryMessages()` asks a short recovery prompt through the coder model when available.
 - Iterations have small top-right widgets: collapse/expand and copy. Coder copy payload is the extracted final code; Reviewer copy payload is the full review text.
 - When a newer iteration starts, older iteration cards auto-collapse. Users can reopen them with the chevron button.
-- For selected language `python`, `_buildVibeLanguageInstruction()` adds notebook guidance to both Coder and Reviewer: code is intended for one Jupyter Notebook/JupyterLab cell, not a CLI `.py` file. Reviewer must not penalize missing `argparse`, `sys.argv`, or `if __name__ == "__main__"` unless the user explicitly requested a script/package. This instruction must not be added for ABAP, 1C, or JavaScript.
+- The visible prompt textarea stores only the base prompt. `_buildFinalSystemPrompt()` appends the selected-language instruction and, for Reviewer, `REVIEWER_SCORE_INSTRUCTION`; the accordion shows this through the “Авто-добавляется...” summary and “Показать итоговый промпт” preview so the user can audit exactly what is sent to the model.
+- For selected language `python`, `_buildVibeLanguageInstruction()` adds notebook guidance to both Coder and Reviewer: code is intended for one Jupyter Notebook/JupyterLab cell, not a CLI `.py` file. Reviewer must not penalize missing `argparse`, `sys.argv`, or `if __name__ == "__main__"` unless the user explicitly requested a script/package. Coder must not put ordinary prose inside the Python code block unless it is a valid `#` comment/docstring; Reviewer treats bare prose lines as `SyntaxError`.
+- For selected language `javascript`, `_buildVibeLanguageInstruction()` adds JS-specific guidance to both Coder and Reviewer: respect browser vs Node.js runtime, avoid TypeScript/frameworks/deps unless requested, use modern JS (`const`/`let`, strict equality, async/await with error handling), avoid unsafe DOM insertion (`innerHTML` with user data), and review Promise/event-listener/timer cleanup issues.
+- Coder iterations render as compact code cells via `_renderCoderCellHtml()` instead of MarkdownRenderer. This prevents Python comments like `# Заголовок` from becoming markdown headings. Reviewer iterations still render as markdown because review text benefits from headings, lists, and code snippets; when Reviewer suggests corrected code, `_buildVibeLanguageInstruction()` tells it to use a fenced code block so MarkdownRenderer adds the per-block `Копировать` button.
 
 ### Prompt System
 

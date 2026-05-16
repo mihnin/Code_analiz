@@ -1493,6 +1493,30 @@ class VibeCodingManager {
         return String(visibleText || '').trim();
     }
 
+    static _normalizeCoderCellText(text) {
+        const raw = String(text || '').trim();
+        if (!raw) return '';
+
+        const matches = [...raw.matchAll(/```[\w+-]*\r?\n([\s\S]*?)```/g)];
+        if (matches.length > 0) {
+            let best = matches[0][1];
+            for (const m of matches) {
+                if (m[1].length > best.length) best = m[1];
+            }
+            return best.trim();
+        }
+
+        return raw
+            .replace(/^```[\w+-]*\s*/i, '')
+            .replace(/\s*```$/i, '')
+            .trim();
+    }
+
+    static _renderCoderCellHtml(text) {
+        const code = VibeCodingManager._normalizeCoderCellText(text) || '# Кодер пока не вернул код';
+        return `<pre class="vibe-code-cell"><code>${MarkdownRenderer.escapeHtml(code)}</code></pre>`;
+    }
+
     static _shouldAutoCollapseIteration(iterValue, currentIter) {
         const iter = Number.parseInt(iterValue, 10);
         return Number.isFinite(iter) && iter < currentIter;
@@ -1501,7 +1525,30 @@ class VibeCodingManager {
     static _buildVibeLanguageInstruction(role, language, langLabel) {
         const lang = language || '';
         const label = langLabel || lang || 'не указан';
-        let instruction = `\n\nЯзык программирования: ${label}. Оборачивай итоговый код в \`\`\`${lang || 'text'} … \`\`\` блок.`;
+        let instruction = role === 'reviewer'
+            ? `\n\nЯзык программирования: ${label}. Если даёшь исправленный код или фрагмент, помещай его в отдельный fenced code block \`\`\`${lang || 'text'} … \`\`\`, чтобы этот блок можно было скопировать отдельно. Остальное ревью пиши markdown-текстом.`
+            : `\n\nЯзык программирования: ${label}. Оборачивай итоговый код в \`\`\`${lang || 'text'} … \`\`\` блок.`;
+
+        if (lang === 'javascript') {
+            if (role === 'reviewer') {
+                instruction += `\n\n--- Контекст JavaScript ---
+Проверяй специфику JavaScript, а не абстрактный псевдокод: корректность выбранного окружения browser/Node, отсутствие смешения DOM API и Node-only API без причины, обработку Promise rejection, async/await и ошибок в асинхронном коде.
+Проверяй DOM-безопасность: нет ли XSS через innerHTML/insertAdjacentHTML/document.write с пользовательскими данными; безопасный вывод должен идти через textContent, DOM API или явную санитизацию.
+Проверяй утечки и lifecycle: event listener должен сниматься, таймеры и AbortController должны очищаться, глобальные переменные не должны загрязнять window/globalThis.
+Проверяй качество JS: const/let вместо var, strict equality ===/!==, понятная работа с null/undefined, отсутствие мутирования входных данных без необходимости, отсутствие скрытых race condition.
+Не снижай оценку только за отсутствие TypeScript, React, bundler, npm-пакета или тестового фреймворка, если пользователь явно не просил их. Если предлагаешь исправленный JS-код, дай его отдельным fenced code block \`\`\`javascript, чтобы можно было скопировать отдельно.`;
+                return instruction;
+            }
+
+            instruction += `\n\n--- JavaScript ---
+Пиши modern JavaScript без TypeScript, если пользователь явно не просил TypeScript.
+Сначала учитывай среду выполнения: browser, Node.js или универсальный код. Не смешивай DOM API и Node-only API без явной необходимости.
+Используй const/let вместо var, strict equality ===/!==, маленькие функции, явную обработку null/undefined и понятные имена.
+Для асинхронного кода используй async/await с try/catch или явной обработкой Promise rejection. Не оставляй unhandled promises.
+Для browser-кода не вставляй пользовательские данные через innerHTML; используй textContent/DOM API или явную санитизацию. Чисти event listener, таймеры и AbortController, если они создаются.
+Не добавляй npm-зависимости, CDN, React/Vue/бандлер или файловую структуру, если пользователь явно не просил. Верни один полный копируемый JS-фрагмент.`;
+            return instruction;
+        }
 
         if (lang !== 'python') return instruction;
 
@@ -1509,6 +1556,7 @@ class VibeCodingManager {
             instruction += `\n\n--- Контекст Python/Jupyter Notebook ---
 Код предназначен для копирования в одну ячейку Jupyter Notebook/JupyterLab, а не обязательно в отдельный .py-файл.
 Не снижай оценку только за отсутствие argparse, sys.argv, if __name__ == "__main__" или CLI-структуры, если пользователь явно не просил скрипт/пакет.
+Считай критической ошибкой любой обычный текст без # внутри Python-кода: строка вроде "Константы в начале ячейки" без # даст SyntaxError. Пояснения внутри кода должны быть только Python-комментариями через # или строками-докстрингами там, где это синтаксически уместно.
 Проверяй notebook-эргономику: понятные переменные входных файлов в начале ячейки, явный вывод результата через display(...), .head() или print(...), отсутствие лишнего разбиения на файлы.
 Критиковать нужно реальные проблемы: ошибки, безопасность, обработку данных, читаемость, воспроизводимость и удобство запуска в ноутбуке.`;
             return instruction;
@@ -1516,11 +1564,37 @@ class VibeCodingManager {
 
         instruction += `\n\n--- Python/Jupyter Notebook ---
 Пиши Python как код для одной ячейки Jupyter Notebook/JupyterLab, чтобы пользователь мог сразу скопировать и запустить его в ноутбуке.
+Внутри блока кода не пиши обычный текст без #. Любая поясняющая строка должна быть валидным Python-комментарием через #, иначе при запуске ячейки будет SyntaxError.
+Держи код компактным: не оставляй больше одной пустой строки подряд.
 Не делай CLI-обвязку без явной просьбы: не используй argparse, sys.argv и if __name__ == "__main__".
 Если нужны входные файлы Excel/CSV/JSON, задай понятные переменные в начале ячейки, например file_path = "data.xlsx".
 Для табличных результатов используй pandas и показывай результат через display(...) или .head(), если это уместно.
 Не дроби ответ на несколько файлов; отдельные файлы создавай только если пользователь явно попросил полноценный проект или модуль.`;
         return instruction;
+    }
+
+    static _buildFinalSystemPrompt(role, basePrompt, language, langLabel) {
+        const fallback = role === 'reviewer' ? DEFAULT_VIBE_REVIEWER_PROMPT : DEFAULT_VIBE_CODER_PROMPT;
+        const rootPrompt = String(basePrompt || '').trim() || fallback;
+        const languageInstruction = VibeCodingManager._buildVibeLanguageInstruction(role, language, langLabel);
+        return role === 'reviewer'
+            ? `${rootPrompt}${languageInstruction}${REVIEWER_SCORE_INSTRUCTION}`
+            : `${rootPrompt}${languageInstruction}`;
+    }
+
+    static _getLanguageInstructionSummary(role, language, langLabel) {
+        const label = langLabel || language || 'выбранный язык';
+        if (language === 'python') {
+            return role === 'reviewer'
+                ? `${label}: проверка рассчитана на одну ячейку Jupyter, обычный текст без # внутри кода считается SyntaxError; исправленные фрагменты нужно отдавать отдельными code block.`
+                : `${label}: итоговый код должен быть одной копируемой ячейкой Jupyter; пояснения внутри кода только через #, без CLI-обвязки без явной просьбы.`;
+        }
+        if (language === 'javascript') {
+            return role === 'reviewer'
+                ? `${label}: ревью учитывает browser/Node окружение, Promise/async ошибки, DOM XSS, lifecycle listener/timer и качество современного JS.`
+                : `${label}: код пишется как modern JS без TypeScript/npm/CDN/фреймворков без просьбы, с учетом browser/Node окружения и async/error handling.`;
+        }
+        return `${label}: итоговый промпт дополняется выбранным языком и форматом ответа для роли.`;
     }
 
     static _coerceScore(value) {
@@ -1723,6 +1797,67 @@ class VibeCodingManager {
         return best.trim();
     }
 
+    _getPromptElementId(which) {
+        return which === 'reviewer' ? 'vibe-reviewer-prompt' : 'vibe-coder-prompt';
+    }
+
+    _getPromptFinalElementId(which) {
+        return which === 'reviewer' ? 'vibe-reviewer-final-prompt' : 'vibe-coder-final-prompt';
+    }
+
+    _getPromptSummaryElementId(which) {
+        return which === 'reviewer' ? 'vibe-reviewer-auto-summary' : 'vibe-coder-auto-summary';
+    }
+
+    _getCurrentLanguagePair() {
+        const langSelect = document.getElementById('vibe-lang');
+        const language = langSelect?.value || this.currentLang || 'python';
+        return { language, label: LANGUAGES[language] || language };
+    }
+
+    _updatePromptPreview(which) {
+        const source = document.getElementById(this._getPromptElementId(which));
+        const target = document.getElementById(this._getPromptFinalElementId(which));
+        const summary = document.getElementById(this._getPromptSummaryElementId(which));
+        if (!source || !target || !summary) return;
+
+        const { language, label } = this._getCurrentLanguagePair();
+        target.value = VibeCodingManager._buildFinalSystemPrompt(which, source.value, language, label);
+        summary.textContent = VibeCodingManager._getLanguageInstructionSummary(which, language, label);
+    }
+
+    _updatePromptPreviews() {
+        this._updatePromptPreview('coder');
+        this._updatePromptPreview('reviewer');
+    }
+
+    _toggleFinalPrompt(which) {
+        const box = document.querySelector(`[data-vibe-prompt-preview="${which}"]`);
+        const btn = document.querySelector(`[data-vibe-final-toggle="${which}"]`);
+        if (!box || !btn) return;
+
+        this._updatePromptPreview(which);
+        const opened = !box.classList.contains('is-open');
+        box.classList.toggle('is-open', opened);
+        btn.textContent = opened ? 'Скрыть итоговый промпт' : 'Показать итоговый промпт';
+    }
+
+    async _copyFinalPrompt(which) {
+        this._updatePromptPreview(which);
+        const target = document.getElementById(this._getPromptFinalElementId(which));
+        const text = target?.value?.trim() || '';
+        if (!text) {
+            Toast.show('Пока нечего копировать', 'warning');
+            return;
+        }
+        try {
+            await this._writeClipboard(text);
+            Toast.show('Итоговый промпт скопирован');
+        } catch {
+            Toast.show('Не удалось скопировать', 'warning');
+        }
+    }
+
     /* ---------- UI binding ---------- */
     _bindUI() {
         const taskInput = document.getElementById('vibe-task');
@@ -1741,8 +1876,21 @@ class VibeCodingManager {
 
         langSelect.addEventListener('change', () => {
             this.currentLang = langSelect.value;
+            this._updatePromptPreviews();
         });
         this.currentLang = langSelect.value;
+
+        ['coder', 'reviewer'].forEach(which => {
+            document.getElementById(this._getPromptElementId(which))?.addEventListener('input', () => {
+                this._updatePromptPreview(which);
+            });
+            document.querySelector(`[data-vibe-final-toggle="${which}"]`)?.addEventListener('click', () => {
+                this._toggleFinalPrompt(which);
+            });
+            document.querySelector(`[data-vibe-final-copy="${which}"]`)?.addEventListener('click', () => {
+                this._copyFinalPrompt(which);
+            });
+        });
 
         btnRun.addEventListener('click', () => this.runCycle());
         btnStop.addEventListener('click', () => this.stop());
@@ -1781,6 +1929,7 @@ class VibeCodingManager {
     _restorePromptsToUI() {
         document.getElementById('vibe-coder-prompt').value = this._getCoderPrompt();
         document.getElementById('vibe-reviewer-prompt').value = this._getReviewerPrompt();
+        this._updatePromptPreviews();
     }
 
     _saveColumnPrompt(which) {
@@ -1793,6 +1942,7 @@ class VibeCodingManager {
         const settingsId = which === 'coder' ? 'vibe-coder-prompt-settings' : 'vibe-reviewer-prompt-settings';
         const settingsField = document.getElementById(settingsId);
         if (settingsField) settingsField.value = val || def;
+        this._updatePromptPreview(which);
         Toast.show(`Промпт ${which === 'coder' ? 'Кодера' : 'Ревьюера'} сохранён`);
     }
 
@@ -1806,6 +1956,7 @@ class VibeCodingManager {
         const settingsId = which === 'coder' ? 'vibe-coder-prompt-settings' : 'vibe-reviewer-prompt-settings';
         const settingsField = document.getElementById(settingsId);
         if (settingsField) settingsField.value = def;
+        this._updatePromptPreview(which);
         Toast.show('Промпт восстановлен по умолчанию');
     }
 
@@ -2053,8 +2204,14 @@ class VibeCodingManager {
 
     _updateIterBody(div, text) {
         const body = div.querySelector('.vibe-iter-body');
-        this._setIterCopyText(div, text);
-        body.innerHTML = MarkdownRenderer.render(text || '*(пусто)*');
+        if (div.dataset.column === 'coder') {
+            const code = VibeCodingManager._normalizeCoderCellText(text);
+            this._setIterCopyText(div, code);
+            body.innerHTML = VibeCodingManager._renderCoderCellHtml(text);
+        } else {
+            this._setIterCopyText(div, text);
+            body.innerHTML = MarkdownRenderer.render(text || '*(пусто)*');
+        }
         const list = div.parentElement;
         list.scrollTop = list.scrollHeight;
     }
@@ -2064,6 +2221,7 @@ class VibeCodingManager {
         const numEl = div.querySelector('.vibe-iter-num');
         numEl.innerHTML = '';
         numEl.appendChild(document.createTextNode(`Итерация ${num}`));
+        this._updateIterBody(div, code);
         this._setIterCopyText(div, VibeCodingManager._getIterationCopyText('coder', div._copyText, code));
     }
 
@@ -2199,8 +2357,12 @@ class VibeCodingManager {
         this._log(`Итерация ${iterNum} — Кодер (${coderModel}) пишет…`, 'info');
         const coderBlock = this._createIterBlock('coder', iterNum, 'Кодер пишет…');
 
-        const coderSystem = (document.getElementById('vibe-coder-prompt').value.trim() || DEFAULT_VIBE_CODER_PROMPT)
-            + VibeCodingManager._buildVibeLanguageInstruction('coder', this.currentLang, langLabel);
+        const coderSystem = VibeCodingManager._buildFinalSystemPrompt(
+            'coder',
+            document.getElementById('vibe-coder-prompt').value,
+            this.currentLang,
+            langLabel
+        );
 
         let coderUser;
         if (prevIter && prevIter.code) {
@@ -2246,9 +2408,12 @@ class VibeCodingManager {
         this._log(`Итерация ${iterNum} — Ревьюер (${reviewerModel}) проверяет…`, 'info');
         const reviewerBlock = this._createIterBlock('reviewer', iterNum, 'Ревьюер анализирует…');
 
-        const reviewerSystem = (document.getElementById('vibe-reviewer-prompt').value.trim() || DEFAULT_VIBE_REVIEWER_PROMPT)
-            + VibeCodingManager._buildVibeLanguageInstruction('reviewer', this.currentLang, langLabel)
-            + REVIEWER_SCORE_INSTRUCTION;
+        const reviewerSystem = VibeCodingManager._buildFinalSystemPrompt(
+            'reviewer',
+            document.getElementById('vibe-reviewer-prompt').value,
+            this.currentLang,
+            langLabel
+        );
 
         const reviewerUser =
             `Язык: ${langLabel}\n\nЗадача автора:\n${this.currentTask}\n\n` +
@@ -2479,12 +2644,14 @@ class VibeCodingManager {
             this.state.settings.vibeCoderPrompt = (val === DEFAULT_VIBE_CODER_PROMPT) ? '' : val;
             this.state.saveSettings();
             document.getElementById('vibe-coder-prompt').value = val || DEFAULT_VIBE_CODER_PROMPT;
+            this._updatePromptPreview('coder');
         });
         reviewerTA.addEventListener('blur', () => {
             const val = reviewerTA.value.trim();
             this.state.settings.vibeReviewerPrompt = (val === DEFAULT_VIBE_REVIEWER_PROMPT) ? '' : val;
             this.state.saveSettings();
             document.getElementById('vibe-reviewer-prompt').value = val || DEFAULT_VIBE_REVIEWER_PROMPT;
+            this._updatePromptPreview('reviewer');
         });
 
         document.querySelectorAll('[data-vibe-reset-settings]').forEach(btn => {
@@ -2497,6 +2664,7 @@ class VibeCodingManager {
                 this.state.settings[field] = '';
                 this.state.saveSettings();
                 document.getElementById(which === 'coder' ? 'vibe-coder-prompt' : 'vibe-reviewer-prompt').value = def;
+                this._updatePromptPreview(which);
                 Toast.show('Промпт восстановлен по умолчанию');
             });
         });

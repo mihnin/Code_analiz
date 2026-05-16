@@ -24,8 +24,15 @@ function loadTestExports() {
         window: {}
     };
 
-    vm.runInNewContext(`${source}\nthis.__testExports = { VibeCodingManager, LLMService, DEFAULT_VIBE_CODER_PROMPT };`, context);
+    vm.runInNewContext(`${source}\nthis.__testExports = { VibeCodingManager, LLMService, MarkdownRenderer, DEFAULT_VIBE_CODER_PROMPT };`, context);
     return context.__testExports;
+}
+
+function readVibeLanguageOptions() {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    const select = html.match(/<select id="vibe-lang">([\s\S]*?)<\/select>/);
+    assert.ok(select, 'vibe language select not found');
+    return [...select[1].matchAll(/<option value="([^"]+)"/g)].map(m => m[1]);
 }
 
 test('vibecode uses content when an LLM result has normal content', () => {
@@ -92,6 +99,97 @@ test('vibecode adds Jupyter guidance only for Python coder and reviewer prompts'
     assert.match(reviewerPython, /argparse/i);
     assert.doesNotMatch(coderJs, /Jupyter Notebook|argparse/i);
     assert.doesNotMatch(reviewerJs, /Jupyter Notebook|argparse/i);
+});
+
+test('vibecode language selector exposes only Python and JavaScript', () => {
+    assert.deepEqual(readVibeLanguageOptions(), ['python', 'javascript']);
+});
+
+test('vibecode builds the final system prompt with visible language additions', () => {
+    const { VibeCodingManager } = loadTestExports();
+
+    const coderPrompt = VibeCodingManager._buildFinalSystemPrompt('coder', 'BASE CODER', 'python', 'Python');
+    const reviewerPrompt = VibeCodingManager._buildFinalSystemPrompt('reviewer', 'BASE REVIEWER', 'javascript', 'JavaScript');
+
+    assert.match(coderPrompt, /^BASE CODER/);
+    assert.match(coderPrompt, /Jupyter Notebook/i);
+    assert.match(coderPrompt, /обычный текст без #/i);
+    assert.doesNotMatch(coderPrompt, /ОЦЕНКА: N\/10/);
+
+    assert.match(reviewerPrompt, /^BASE REVIEWER/);
+    assert.match(reviewerPrompt, /Promise/i);
+    assert.match(reviewerPrompt, /ОЦЕНКА: N\/10/);
+});
+
+test('vibecode page exposes final prompt preview controls', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+
+    assert.match(html, /id="vibe-coder-auto-summary"/);
+    assert.match(html, /id="vibe-reviewer-auto-summary"/);
+    assert.match(html, /id="vibe-coder-final-prompt"/);
+    assert.match(html, /id="vibe-reviewer-final-prompt"/);
+    assert.match(html, /data-vibe-final-toggle="coder"/);
+    assert.match(html, /data-vibe-final-toggle="reviewer"/);
+});
+
+test('python vibecode prompts forbid plain text lines inside notebook code', () => {
+    const { VibeCodingManager } = loadTestExports();
+
+    const coderPython = VibeCodingManager._buildVibeLanguageInstruction('coder', 'python', 'Python');
+    const reviewerPython = VibeCodingManager._buildVibeLanguageInstruction('reviewer', 'python', 'Python');
+
+    assert.match(coderPython, /обычный текст без #/i);
+    assert.match(coderPython, /SyntaxError/i);
+    assert.match(reviewerPython, /обычный текст без #/i);
+    assert.match(reviewerPython, /SyntaxError/i);
+});
+
+test('vibecode adds JavaScript-specific guidance for coder and reviewer prompts', () => {
+    const { VibeCodingManager } = loadTestExports();
+
+    const coderJs = VibeCodingManager._buildVibeLanguageInstruction('coder', 'javascript', 'JavaScript');
+    const reviewerJs = VibeCodingManager._buildVibeLanguageInstruction('reviewer', 'javascript', 'JavaScript');
+    const coderAbap = VibeCodingManager._buildVibeLanguageInstruction('coder', 'abap', 'ABAP');
+
+    assert.match(coderJs, /modern JavaScript/i);
+    assert.match(coderJs, /const\/let/i);
+    assert.match(coderJs, /async\/await/i);
+    assert.match(coderJs, /browser|Node/i);
+    assert.match(reviewerJs, /DOM/i);
+    assert.match(reviewerJs, /XSS/i);
+    assert.match(reviewerJs, /Promise/i);
+    assert.match(reviewerJs, /event listener/i);
+    assert.doesNotMatch(coderAbap, /modern JavaScript|async\/await|XSS/i);
+});
+
+test('coder output renders as a compact code cell instead of markdown', () => {
+    const { VibeCodingManager } = loadTestExports();
+
+    const html = VibeCodingManager._renderCoderCellHtml(`\`\`\`python
+import pandas as pd
+
+# Константы в начале ячейки
+FILE_PATH = "data.xlsx"
+\`\`\``);
+
+    assert.match(html, /<pre class="vibe-code-cell"><code>/);
+    assert.match(html, /# Константы в начале ячейки/);
+    assert.doesNotMatch(html, /<h1>|<h2>|<p>|```python/);
+});
+
+test('reviewer markdown code blocks keep their own copy button', () => {
+    const { MarkdownRenderer, VibeCodingManager } = loadTestExports();
+
+    const reviewerPython = VibeCodingManager._buildVibeLanguageInstruction('reviewer', 'python', 'Python');
+    const html = MarkdownRenderer.render(`Исправленный фрагмент:
+\`\`\`python
+print("ok")
+\`\`\``);
+
+    assert.match(reviewerPython, /fenced code block/i);
+    assert.match(reviewerPython, /скопировать отдельно/i);
+    assert.match(html, /btn-copy-code/);
+    assert.match(html, /<code class="lang-python">print\(&quot;ok&quot;\)<\/code>/);
 });
 
 test('vibecode can prepend a recovered score to a reasoning-only review', () => {
