@@ -24,7 +24,7 @@ function loadTestExports(overrides = {}) {
         window: {}
     };
 
-    vm.runInNewContext(`${source}\nthis.__testExports = { AppState, VibeCodingManager, LLMService, MarkdownRenderer, DEFAULT_VIBE_CODER_PROMPT, DEFAULT_VIBE_REVIEWER_PROMPT, DEFAULT_PROMPTS, DEFAULT_PROMPT_MATRIX_VERSION };`, context);
+    vm.runInNewContext(`${source}\nthis.__testExports = { AppState, AdminManager, VibeCodingManager, LLMService, MarkdownRenderer, DEFAULT_VIBE_CODER_PROMPT, DEFAULT_VIBE_REVIEWER_PROMPT, DEFAULT_PROMPTS, DEFAULT_PROMPT_MATRIX_VERSION, DEFAULT_SUPPORT_SYSTEM_PROMPT };`, context);
     return context.__testExports;
 }
 
@@ -143,6 +143,53 @@ test('help page documents current vibecoding and prompt behavior', () => {
     assert.doesNotMatch(html, /проверяются 10 категорий/);
     assert.doesNotMatch(html, /Что будет проверено \(8 категорий\)/);
     assert.doesNotMatch(html, /стоят ~4x дороже/);
+});
+
+test('support chat system prompt documents current app and vibecoding workflow', () => {
+    const { DEFAULT_SUPPORT_SYSTEM_PROMPT } = loadTestExports();
+
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /AI сканер/);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /нижн.*прав|прав.*нижн/i);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /Вайбкодинг/);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /Кодер/);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /Ревьюер/);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /3 итерац|тр[её]х итерац/i);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /ОЦЕНКА: N\/10/);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /LM Studio \/ Ollama \/ Xinference/);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /Python/);
+    assert.match(DEFAULT_SUPPORT_SYSTEM_PROMPT, /JavaScript/);
+});
+
+test('admin settings migrate the legacy default support prompt to the current one', () => {
+    const storage = new Map();
+    storage.set('codesentinel_admin_settings', JSON.stringify({
+        mode: 'cloud',
+        cloudApiKey: '',
+        cloudModel: 'deepseek-chat',
+        cloudUrl: 'https://api.deepseek.com',
+        localProvider: 'xinference',
+        localUrl: 'http://127.0.0.1:9997',
+        localModel: '',
+        temperature: 0.2,
+        maxTokens: 768,
+        contextWindow: 4096,
+        systemPrompt: 'Ты — виртуальный ассистент первой линии технической поддержки группы УПФЭ. Экономические эффекты.',
+        welcomeMessage: 'old welcome'
+    }));
+
+    const { AdminManager, DEFAULT_SUPPORT_SYSTEM_PROMPT } = loadTestExports({
+        localStorage: {
+            getItem: key => storage.get(key) || null,
+            setItem: (key, value) => storage.set(key, value),
+            removeItem: key => storage.delete(key)
+        }
+    });
+    const admin = new AdminManager({});
+    const persisted = JSON.parse(storage.get('codesentinel_admin_settings'));
+
+    assert.equal(admin.settings.systemPrompt, DEFAULT_SUPPORT_SYSTEM_PROMPT);
+    assert.equal(persisted.systemPrompt, DEFAULT_SUPPORT_SYSTEM_PROMPT);
+    assert.equal(storage.get('codesentinel_admin_support_prompt_version'), '2');
 });
 
 test('default prompt matrix uses English system instructions with Russian output policy', () => {
