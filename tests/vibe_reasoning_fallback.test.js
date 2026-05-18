@@ -35,6 +35,10 @@ function readVibeLanguageOptions() {
     return [...select[1].matchAll(/<option value="([^"]+)"/g)].map(m => m[1]);
 }
 
+function readIndexHtml() {
+    return fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+}
+
 test('vibecode uses content when an LLM result has normal content', () => {
     const { VibeCodingManager } = loadTestExports();
 
@@ -118,6 +122,27 @@ test('vibecode default role prompts are English and lock human text to Russian',
 
 test('vibecode language selector exposes only Python and JavaScript', () => {
     assert.deepEqual(readVibeLanguageOptions(), ['python', 'javascript']);
+});
+
+test('help page documents current vibecoding and prompt behavior', () => {
+    const html = readIndexHtml();
+
+    assert.match(html, /data-scroll="help-vibecode"/);
+    assert.match(html, /id="help-vibecode"/);
+    assert.match(html, /Кодер/);
+    assert.match(html, /Ревьюер/);
+    assert.match(html, /одну и ту же модель/);
+    assert.match(html, /LM Studio \/ Ollama \/ Xinference/);
+    assert.match(html, /11 встроенными промптами/);
+    assert.match(html, /английском/i);
+    assert.match(html, /ответ на русском/i);
+    assert.doesNotMatch(html, /поставляется с 8 предустановленными промптами/);
+    assert.doesNotMatch(html, /Итоговая оценка безопасности X\/10/);
+    assert.doesNotMatch(html, /Выдаёт оценку 1-10/);
+    assert.doesNotMatch(html, /оценкой соответствия/);
+    assert.doesNotMatch(html, /проверяются 10 категорий/);
+    assert.doesNotMatch(html, /Что будет проверено \(8 категорий\)/);
+    assert.doesNotMatch(html, /стоят ~4x дороже/);
 });
 
 test('default prompt matrix uses English system instructions with Russian output policy', () => {
