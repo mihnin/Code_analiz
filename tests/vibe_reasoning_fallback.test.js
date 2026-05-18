@@ -39,6 +39,10 @@ function readIndexHtml() {
     return fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 }
 
+function readStylesCss() {
+    return fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+}
+
 test('vibecode uses content when an LLM result has normal content', () => {
     const { VibeCodingManager } = loadTestExports();
 
@@ -134,6 +138,19 @@ test('vibecode task placeholder uses a clear CSV preview example', () => {
     assert.match(match[1], /последние 5 строк/i);
     assert.match(match[1], /лист 1/i);
     assert.doesNotMatch(match[1], /JSON-логов|argparse/i);
+});
+
+test('vibecode long iteration bodies remain scrollable and clear of support widget', () => {
+    const css = readStylesCss();
+    const pageRule = css.match(/#page-vibecode\s*\{([\s\S]*?)\}/);
+    const bodyRule = css.match(/(?:^|\n)\.vibe-iter-body\s*\{([\s\S]*?)\}/);
+
+    assert.ok(pageRule, '#page-vibecode rule not found');
+    assert.ok(bodyRule, '.vibe-iter-body rule not found');
+    assert.match(pageRule[1], /padding-bottom\s*:\s*(?:9[0-9]|1[0-9]{2})px/);
+    assert.match(pageRule[1], /scroll-padding-bottom\s*:/);
+    assert.match(bodyRule[1], /max-height\s*:/);
+    assert.match(bodyRule[1], /overflow-y\s*:\s*auto/);
 });
 
 test('help page documents current vibecoding and prompt behavior', () => {

@@ -378,6 +378,8 @@ body.sidebar-collapsed .sidebar-toggle .icon {
 #page-vibecode {
     overflow-y: auto;
     overflow-x: hidden;
+    padding-bottom: 96px;
+    scroll-padding-bottom: 96px;
 }
 
 /* --- Page Header --- */
@@ -4344,6 +4346,9 @@ body.sidebar-collapsed .sidebar-toggle .icon {
     font-size: 13px;
     color: var(--text-primary);
     line-height: 1.55;
+    max-height: 64vh;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
 }
 
 .vibe-iter-body pre {
