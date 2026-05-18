@@ -153,6 +153,13 @@ test('vibecode long iteration bodies remain scrollable and clear of support widg
     assert.match(bodyRule[1], /overflow-y\s*:\s*auto/);
 });
 
+test('static assets use cache-busting query strings for file URL reloads', () => {
+    const html = readIndexHtml();
+
+    assert.match(html, /href="styles\.css\?v=[^"]+"/);
+    assert.match(html, /src="app\.js\?v=[^"]+"/);
+});
+
 test('help page documents current vibecoding and prompt behavior', () => {
     const html = readIndexHtml();
 
