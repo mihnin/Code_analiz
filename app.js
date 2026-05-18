@@ -1723,17 +1723,6 @@ class MarkdownRenderer {
         // Escape HTML in remaining text
         html = MarkdownRenderer.escapeHtml(html);
 
-        // Restore code blocks
-        html = html.replace(/%%CODEBLOCK_(\d+)%%/g, (_, idx) => {
-            const block = codeBlocks[+idx];
-            return `<div class="code-block-wrapper"><button class="btn-copy-code">Копировать</button><pre><code class="lang-${block.lang}">${block.code}</code></pre></div>`;
-        });
-
-        // Restore inline code
-        html = html.replace(/%%INLINE_(\d+)%%/g, (_, idx) => {
-            return `<code>${inlineCodes[+idx]}</code>`;
-        });
-
         // Headers
         html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
         html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
@@ -1777,6 +1766,18 @@ class MarkdownRenderer {
 
         // Clean up empty paragraphs
         html = html.replace(/<p>\s*<\/p>/g, '');
+
+        // Restore inline code after Markdown parsing so its contents cannot be re-parsed.
+        html = html.replace(/%%INLINE_(\d+)%%/g, (_, idx) => {
+            return `<code>${inlineCodes[+idx]}</code>`;
+        });
+
+        // Restore code blocks last. Python comments such as "# Настройки" must stay code,
+        // not become Markdown headers inside reviewer-corrected snippets.
+        html = html.replace(/%%CODEBLOCK_(\d+)%%/g, (_, idx) => {
+            const block = codeBlocks[+idx];
+            return `<div class="code-block-wrapper"><button class="btn-copy-code">Копировать</button><pre><code class="lang-${block.lang}">${block.code}</code></pre></div>`;
+        });
 
         return html;
     }

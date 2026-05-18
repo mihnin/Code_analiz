@@ -418,6 +418,22 @@ print("ok")
     assert.match(html, /<code class="lang-python">print\(&quot;ok&quot;\)<\/code>/);
 });
 
+test('reviewer python code comments stay comments inside fenced code blocks', () => {
+    const { MarkdownRenderer } = loadTestExports();
+
+    const html = MarkdownRenderer.render(`Рекомендуемый исправленный вариант:
+\`\`\`python
+import pandas as pd
+
+# Настройки
+file_path = "data.xlsx"
+\`\`\``);
+
+    assert.match(html, /btn-copy-code/);
+    assert.match(html, /<code class="lang-python">[\s\S]*# Настройки[\s\S]*file_path = &quot;data\.xlsx&quot;/);
+    assert.doesNotMatch(html, /<h1>Настройки<\/h1>/);
+});
+
 test('markdown renderer keeps an unclosed streaming code fence as code', () => {
     const { MarkdownRenderer } = loadTestExports();
 
