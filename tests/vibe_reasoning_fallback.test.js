@@ -275,6 +275,25 @@ test('vibecode builds the final system prompt with visible language additions', 
     assert.match(reviewerPrompt, /ОЦЕНКА: N\/10/);
 });
 
+test('vibecode auto-addition summaries are English like the final prompt blocks', () => {
+    const { VibeCodingManager } = loadTestExports();
+
+    const summaries = [
+        VibeCodingManager._getLanguageInstructionSummary('coder', 'python', 'Python'),
+        VibeCodingManager._getLanguageInstructionSummary('reviewer', 'python', 'Python'),
+        VibeCodingManager._getLanguageInstructionSummary('coder', 'javascript', 'JavaScript'),
+        VibeCodingManager._getLanguageInstructionSummary('reviewer', 'javascript', 'JavaScript'),
+        VibeCodingManager._getLanguageInstructionSummary('coder', 'python', 'Python', 'CUSTOM')
+    ];
+
+    for (const summary of summaries) {
+        assert.doesNotMatch(summary, /[А-Яа-яЁё]/, summary);
+    }
+    assert.match(summaries[0], /Jupyter/i);
+    assert.match(summaries[2], /modern JS/i);
+    assert.match(summaries[4], /custom auto-addition/i);
+});
+
 test('vibecode can replace default language additions with a custom one', () => {
     const { VibeCodingManager } = loadTestExports();
 

@@ -2018,21 +2018,21 @@ Do not split the answer into several files; create separate files only if the us
     }
 
     static _getLanguageInstructionSummary(role, language, langLabel, customInstruction = null) {
-        const label = langLabel || language || 'выбранный язык';
+        const label = langLabel || language || 'selected language';
         if (VibeCodingManager._normalizeAutoInstruction(customInstruction)) {
-            return `${label}: используется пользовательское автодополнение. Оно заменяет стандартный языковой блок для этой роли и языка.`;
+            return `${label}: using a custom auto-addition. It replaces the default language block for this role and language.`;
         }
         if (language === 'python') {
             return role === 'reviewer'
-                ? `${label}: проверка рассчитана на одну ячейку Jupyter, обычный текст без # внутри кода считается SyntaxError; исправленные фрагменты нужно отдавать отдельными code block.`
-                : `${label}: итоговый код должен быть одной копируемой ячейкой Jupyter; пояснения внутри кода только через #, без CLI-обвязки без явной просьбы.`;
+                ? `${label}: review is scoped to one Jupyter cell; plain prose without # inside Python code is a SyntaxError; corrected snippets must be separate code blocks.`
+                : `${label}: final code must be one copyable Jupyter cell; in-code explanations must use # comments; no CLI scaffolding unless explicitly requested.`;
         }
         if (language === 'javascript') {
             return role === 'reviewer'
-                ? `${label}: ревью учитывает browser/Node окружение, Promise/async ошибки, DOM XSS, lifecycle listener/timer и качество современного JS.`
-                : `${label}: код пишется как modern JS без TypeScript/npm/CDN/фреймворков без просьбы, с учетом browser/Node окружения и async/error handling.`;
+                ? `${label}: review checks browser/Node runtime fit, Promise/async errors, DOM XSS, listener/timer lifecycle, and modern JS quality.`
+                : `${label}: code is modern JS without TypeScript/npm/CDN/frameworks unless requested, with browser/Node runtime and async/error handling in mind.`;
         }
-        return `${label}: итоговый промпт дополняется выбранным языком и форматом ответа для роли.`;
+        return `${label}: the final prompt is extended with the selected language and role-specific response format.`;
     }
 
     static _coerceScore(value) {
