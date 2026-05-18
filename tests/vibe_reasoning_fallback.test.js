@@ -124,6 +124,18 @@ test('vibecode language selector exposes only Python and JavaScript', () => {
     assert.deepEqual(readVibeLanguageOptions(), ['python', 'javascript']);
 });
 
+test('vibecode task placeholder uses a clear CSV preview example', () => {
+    const html = readIndexHtml();
+    const match = html.match(/<textarea id="vibe-task"[^>]*placeholder="([^"]+)"/);
+
+    assert.ok(match, 'vibe task placeholder not found');
+    assert.match(match[1], /CSV/i);
+    assert.match(match[1], /первые 5 строк/i);
+    assert.match(match[1], /последние 5 строк/i);
+    assert.match(match[1], /лист 1/i);
+    assert.doesNotMatch(match[1], /JSON-логов|argparse/i);
+});
+
 test('help page documents current vibecoding and prompt behavior', () => {
     const html = readIndexHtml();
 
