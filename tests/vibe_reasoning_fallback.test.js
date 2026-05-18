@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-function loadTestExports() {
+function loadTestExports(overrides = {}) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
     const context = {
         AbortController,
@@ -12,7 +12,7 @@ function loadTestExports() {
         console,
         clearTimeout,
         fetch: async () => { throw new Error('fetch is not available in this test'); },
-        localStorage: {
+        localStorage: overrides.localStorage || {
             getItem: () => null,
             setItem: () => {},
             removeItem: () => {}
@@ -24,7 +24,7 @@ function loadTestExports() {
         window: {}
     };
 
-    vm.runInNewContext(`${source}\nthis.__testExports = { VibeCodingManager, LLMService, MarkdownRenderer, DEFAULT_VIBE_CODER_PROMPT };`, context);
+    vm.runInNewContext(`${source}\nthis.__testExports = { AppState, VibeCodingManager, LLMService, MarkdownRenderer, DEFAULT_VIBE_CODER_PROMPT, DEFAULT_VIBE_REVIEWER_PROMPT, DEFAULT_PROMPTS, DEFAULT_PROMPT_MATRIX_VERSION };`, context);
     return context.__testExports;
 }
 
@@ -101,8 +101,76 @@ test('vibecode adds Jupyter guidance only for Python coder and reviewer prompts'
     assert.doesNotMatch(reviewerJs, /Jupyter Notebook|argparse/i);
 });
 
+test('vibecode default role prompts are English and lock human text to Russian', () => {
+    const { DEFAULT_VIBE_CODER_PROMPT, DEFAULT_VIBE_REVIEWER_PROMPT } = loadTestExports();
+
+    assert.match(DEFAULT_VIBE_CODER_PROMPT, /You are a Principal Engineer/i);
+    assert.match(DEFAULT_VIBE_CODER_PROMPT, /comments and user-facing explanatory text in Russian/i);
+    assert.match(DEFAULT_VIBE_CODER_PROMPT, /code identifiers.*English/i);
+    assert.match(DEFAULT_VIBE_CODER_PROMPT, /Do not use Chinese/i);
+    assert.doesNotMatch(DEFAULT_VIBE_CODER_PROMPT, /[А-Яа-яЁё]/);
+
+    assert.match(DEFAULT_VIBE_REVIEWER_PROMPT, /You are a strict Senior Code Reviewer/i);
+    assert.match(DEFAULT_VIBE_REVIEWER_PROMPT, /Write the review in Russian/i);
+    assert.match(DEFAULT_VIBE_REVIEWER_PROMPT, /Do not use Chinese/i);
+    assert.doesNotMatch(DEFAULT_VIBE_REVIEWER_PROMPT, /[А-Яа-яЁё]/);
+});
+
 test('vibecode language selector exposes only Python and JavaScript', () => {
     assert.deepEqual(readVibeLanguageOptions(), ['python', 'javascript']);
+});
+
+test('default prompt matrix uses English system instructions with Russian output policy', () => {
+    const { DEFAULT_PROMPTS } = loadTestExports();
+
+    assert.ok(DEFAULT_PROMPTS.length >= 10);
+    for (const prompt of DEFAULT_PROMPTS) {
+        assert.match(prompt.systemPrompt, /Write the entire answer in Russian/i, prompt.id);
+        assert.match(prompt.systemPrompt, /code identifiers.*English/i, prompt.id);
+        assert.match(prompt.systemPrompt, /Do not use Chinese/i, prompt.id);
+        assert.doesNotMatch(prompt.systemPrompt, /Найди|Проведи|Сформируй|Анализируй|Рефакторинг кода|Оцени код|ЗАПРЕТЫ|ИСКАТЬ/i, prompt.id);
+    }
+});
+
+test('default prompt matrix migration refreshes built-in prompts and preserves instruction files', () => {
+    const storage = new Map();
+    const oldPrompt = {
+        id: 'infosec_vuln',
+        role: 'infosec',
+        actionName: 'Анализ уязвимостей',
+        systemPrompt: 'Найди уязвимости безопасности в предоставленном коде.',
+        contextContent: 'Internal policy v1',
+        contextFile: 'policy.md'
+    };
+    const customPrompt = {
+        id: 'custom_prompt',
+        role: 'developer',
+        actionName: 'Custom',
+        systemPrompt: 'Custom prompt stays untouched',
+        contextContent: '',
+        contextFile: ''
+    };
+    storage.set('codesentinel_prompts', JSON.stringify([oldPrompt, customPrompt]));
+
+    const { AppState, DEFAULT_PROMPT_MATRIX_VERSION } = loadTestExports({
+        localStorage: {
+            getItem: key => storage.get(key) || null,
+            setItem: (key, value) => storage.set(key, value),
+            removeItem: key => storage.delete(key)
+        }
+    });
+
+    const state = new AppState();
+    const migrated = state.prompts.find(prompt => prompt.id === 'infosec_vuln');
+    const custom = state.prompts.find(prompt => prompt.id === 'custom_prompt');
+
+    assert.match(migrated.systemPrompt, /Write the entire answer in Russian/i);
+    assert.match(migrated.systemPrompt, /code identifiers.*English/i);
+    assert.doesNotMatch(migrated.systemPrompt, /Найди уязвимости/i);
+    assert.equal(migrated.contextContent, 'Internal policy v1');
+    assert.equal(migrated.contextFile, 'policy.md');
+    assert.equal(custom.systemPrompt, 'Custom prompt stays untouched');
+    assert.equal(storage.get('codesentinel_prompt_matrix_version'), String(DEFAULT_PROMPT_MATRIX_VERSION));
 });
 
 test('vibecode builds the final system prompt with visible language additions', () => {
@@ -113,12 +181,39 @@ test('vibecode builds the final system prompt with visible language additions', 
 
     assert.match(coderPrompt, /^BASE CODER/);
     assert.match(coderPrompt, /Jupyter Notebook/i);
-    assert.match(coderPrompt, /обычный текст без #/i);
+    assert.match(coderPrompt, /plain prose without #/i);
+    assert.match(coderPrompt, /Do not use Chinese/i);
     assert.doesNotMatch(coderPrompt, /ОЦЕНКА: N\/10/);
 
     assert.match(reviewerPrompt, /^BASE REVIEWER/);
     assert.match(reviewerPrompt, /Promise/i);
+    assert.match(reviewerPrompt, /review in Russian/i);
     assert.match(reviewerPrompt, /ОЦЕНКА: N\/10/);
+});
+
+test('vibecode can replace default language additions with a custom one', () => {
+    const { VibeCodingManager } = loadTestExports();
+
+    const coderPrompt = VibeCodingManager._buildFinalSystemPrompt(
+        'coder',
+        'BASE CODER',
+        'python',
+        'Python',
+        'CUSTOM NOTE: write a compact notebook cell.'
+    );
+    const reviewerPrompt = VibeCodingManager._buildFinalSystemPrompt(
+        'reviewer',
+        'BASE REVIEWER',
+        'javascript',
+        'JavaScript',
+        'CUSTOM REVIEW NOTE: focus on browser lifecycle.'
+    );
+
+    assert.match(coderPrompt, /CUSTOM NOTE/);
+    assert.doesNotMatch(coderPrompt, /Jupyter Notebook/i);
+    assert.match(reviewerPrompt, /CUSTOM REVIEW NOTE/);
+    assert.match(reviewerPrompt, /ОЦЕНКА: N\/10/);
+    assert.doesNotMatch(reviewerPrompt, /Promise/i);
 });
 
 test('vibecode page exposes final prompt preview controls', () => {
@@ -130,6 +225,10 @@ test('vibecode page exposes final prompt preview controls', () => {
     assert.match(html, /id="vibe-reviewer-final-prompt"/);
     assert.match(html, /data-vibe-final-toggle="coder"/);
     assert.match(html, /data-vibe-final-toggle="reviewer"/);
+    assert.match(html, /id="vibe-coder-auto-editor"/);
+    assert.match(html, /id="vibe-reviewer-auto-editor"/);
+    assert.match(html, /data-vibe-auto-toggle="coder"/);
+    assert.match(html, /data-vibe-auto-reset="reviewer"/);
 });
 
 test('python vibecode prompts forbid plain text lines inside notebook code', () => {
@@ -138,9 +237,9 @@ test('python vibecode prompts forbid plain text lines inside notebook code', () 
     const coderPython = VibeCodingManager._buildVibeLanguageInstruction('coder', 'python', 'Python');
     const reviewerPython = VibeCodingManager._buildVibeLanguageInstruction('reviewer', 'python', 'Python');
 
-    assert.match(coderPython, /обычный текст без #/i);
+    assert.match(coderPython, /plain prose without #/i);
     assert.match(coderPython, /SyntaxError/i);
-    assert.match(reviewerPython, /обычный текст без #/i);
+    assert.match(reviewerPython, /plain prose without #/i);
     assert.match(reviewerPython, /SyntaxError/i);
 });
 
@@ -187,9 +286,23 @@ print("ok")
 \`\`\``);
 
     assert.match(reviewerPython, /fenced code block/i);
-    assert.match(reviewerPython, /скопировать отдельно/i);
+    assert.match(reviewerPython, /copied separately/i);
     assert.match(html, /btn-copy-code/);
     assert.match(html, /<code class="lang-python">print\(&quot;ok&quot;\)<\/code>/);
+});
+
+test('markdown renderer keeps an unclosed streaming code fence as code', () => {
+    const { MarkdownRenderer } = loadTestExports();
+
+    const html = MarkdownRenderer.render(`Исправленный код:
+\`\`\`python
+# Настройки
+FILE_NAME = "example.xlsx"`);
+
+    assert.match(html, /btn-copy-code/);
+    assert.match(html, /<code class="lang-python"># Настройки/);
+    assert.doesNotMatch(html, /<h1>Настройки<\/h1>/);
+    assert.doesNotMatch(html, /```python/);
 });
 
 test('vibecode can prepend a recovered score to a reasoning-only review', () => {

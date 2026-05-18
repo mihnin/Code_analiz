@@ -87,7 +87,7 @@ VibeCoding is a separate page with a two-model cycle:
 3. If the score is below threshold, the next coder iteration receives the previous code plus cleaned reviewer remarks.
 
 Important implementation details:
-- Settings keys: `vibeCoderModel`, `vibeReviewerModel`, `vibeMaxIterations`, `vibeScoreThreshold`, `vibeCoderPrompt`, `vibeReviewerPrompt`.
+- Settings keys: `vibeCoderModel`, `vibeReviewerModel`, `vibeMaxIterations`, `vibeScoreThreshold`, `vibeCoderPrompt`, `vibeReviewerPrompt`, `vibeLanguageInstructions`.
 - Coder and Reviewer always use the local provider configured in the main settings.
 - VibeCoding language selector intentionally exposes only `python` and `javascript` for now. ABAP and 1C remain supported in the main analysis flow, but are hidden from VibeCoding until dedicated coder/reviewer prompts exist.
 - Reviewer score parsing accepts `ОЦЕНКА: N/10`, `SCORE: N/10`, bare `N/10`, and strict/fenced JSON such as `{"score": 8}`.
@@ -95,6 +95,8 @@ Important implementation details:
 - Iterations have small top-right widgets: collapse/expand and copy. Coder copy payload is the extracted final code; Reviewer copy payload is the full review text.
 - When a newer iteration starts, older iteration cards auto-collapse. Users can reopen them with the chevron button.
 - The visible prompt textarea stores only the base prompt. `_buildFinalSystemPrompt()` appends the selected-language instruction and, for Reviewer, `REVIEWER_SCORE_INSTRUCTION`; the accordion shows this through the “Авто-добавляется...” summary and “Показать итоговый промпт” preview so the user can audit exactly what is sent to the model.
+- The selected-language instruction is editable per role and language through “Изменить автодополнение”. Custom values are stored in `settings.vibeLanguageInstructions[role][language]` and replace the default language block. The small reset button restores the current role/language auto-addition; “По умолчанию” restores both the base prompt and all custom auto-additions for that role.
+- Default Coder/Reviewer base prompts and auto-additions are written in English to keep weaker local models stable. They explicitly require Russian for review prose, comments, docstrings, and user-facing explanations; English for code identifiers; and no Chinese or other natural languages.
 - For selected language `python`, `_buildVibeLanguageInstruction()` adds notebook guidance to both Coder and Reviewer: code is intended for one Jupyter Notebook/JupyterLab cell, not a CLI `.py` file. Reviewer must not penalize missing `argparse`, `sys.argv`, or `if __name__ == "__main__"` unless the user explicitly requested a script/package. Coder must not put ordinary prose inside the Python code block unless it is a valid `#` comment/docstring; Reviewer treats bare prose lines as `SyntaxError`.
 - For selected language `javascript`, `_buildVibeLanguageInstruction()` adds JS-specific guidance to both Coder and Reviewer: respect browser vs Node.js runtime, avoid TypeScript/frameworks/deps unless requested, use modern JS (`const`/`let`, strict equality, async/await with error handling), avoid unsafe DOM insertion (`innerHTML` with user data), and review Promise/event-listener/timer cleanup issues.
 - Coder iterations render as compact code cells via `_renderCoderCellHtml()` instead of MarkdownRenderer. This prevents Python comments like `# Заголовок` from becoming markdown headings. Reviewer iterations still render as markdown because review text benefits from headings, lists, and code snippets; when Reviewer suggests corrected code, `_buildVibeLanguageInstruction()` tells it to use a fenced code block so MarkdownRenderer adds the per-block `Копировать` button.
@@ -107,7 +109,8 @@ Prompts are stored in `AppState.prompts` array. Each prompt has: `id`, `role`, `
 - **Language filtering**: prompts with `language` field only appear when matching language is selected; prompts without `language` appear for all languages
 - **Modal editing**: language selector in prompt modal (`#modal-language`); unsaved changes protection via `_hasModalUnsavedChanges()` on overlay click / Escape
 - **Instruction files**: `contextContent` appended to system prompt, persisted with prompt in localStorage
-- **Prompt style (after v9 expert revision)**: all 11 default prompts use **telegraphic, no-fluff style**. No "ты — эксперт с N лет опыта" preambles. Every check is described as a measurable signal (e.g., "функция >50 строк, цикломатическая >10") rather than an abstract principle. Each prompt ends with an explicit output-format block + ЗАПРЕТЫ (anti-fluff: no "оценка X/10", no "топ-3 приоритета", no "заключение", no fabricated findings → "не обнаружено" instead). ИБ-промпты share a single output template via the **`INFOSEC_OUTPUT_TEMPLATE` constant** declared above `DEFAULT_PROMPTS`; the 5 ИБ-prompts interpolate it with `${INFOSEC_OUTPUT_TEMPLATE}`. When editing/adding ИБ-prompts, keep the template reference unless you have a reason to diverge.
+- **Default prompt language policy**: built-in prompt matrix system prompts are overridden through `DEFAULT_PROMPT_SYSTEM_PROMPTS_EN` and versioned by `DEFAULT_PROMPT_MATRIX_VERSION` / `codesentinel_prompt_matrix_version`. The default instructions are written in English for model stability, but require the final answer in Russian, code identifiers in English, Russian comments/docstrings/user-facing messages, and no Chinese or other natural languages. Migration refreshes known built-in prompt IDs while preserving prompt instruction files (`contextContent` / `contextFile`) and user-created custom prompts.
+- **Prompt style (after v9 expert revision)**: all 11 default prompts keep the telegraphic, no-fluff style. No "ты — эксперт с N лет опыта" preambles. Every check is described as a measurable signal (for example, function >50 lines or cyclomatic complexity >10) rather than an abstract principle. Each prompt ends with an explicit output-format block and anti-fluff rules: no invented findings, no generic conclusions, no score/top priorities unless that specific prompt asks for it. Security prompts share a single output template via `INFOSEC_OUTPUT_TEMPLATE_EN`.
 
 ### Two File Attachment Systems
 
@@ -196,7 +199,7 @@ CSS custom properties in `:root`. Key tokens:
 - **Fully autonomous**: no external CDN, fonts, or libraries. Must work in air-gapped corporate networks (КСПД).
 - **No build step**: pure HTML5 + CSS3 + Vanilla JS (ES6+). Opens directly in browser from filesystem.
 - **Browser compatibility**: `AbortSignal.timeout()` and `AbortSignal.any()` wrapped in polyfills (`_createTimeoutSignal`, `_combineSignals`); no inline `onclick` handlers (event delegation instead).
-- **Russian UI**: all labels, prompts, messages in Russian. Respond to user in Russian.
+- **Russian UI**: labels and user-facing app messages stay Russian. Default system prompts may be written in English for model stability, but must instruct the model to answer in Russian and keep code identifiers in English. Respond to user in Russian.
 - **File attachments**: only `.txt`, `.md`, `.markdown`. Max 500KB. Binary rejected via heuristic check. Extension validated in JS before reading. Note: 500KB of code ≈ up to 125K tokens — usually too big for local models; the pre-flight check is what protects users, not the file size limit.
 - **Copy buttons**: every AI response has copy-to-clipboard; code blocks inside responses have their own copy button (bound via event delegation).
 - **No inline event handlers**: use `addEventListener` or event delegation (`bindCodeCopyDelegation()`).
@@ -225,7 +228,7 @@ When user has a file too big for the model's context (typical case: 3000+ lines 
 - `logo.png` — brand logo (compass)
 - `prompts/infosec_universal_vulnerability_analysis.md` — comprehensive security prompt template (570 lines, all languages). **Note**: superseded by the in-app short prompts in `DEFAULT_PROMPTS` after v9 revision; kept as a reference for the security team. Not loaded by the app.
 - `примеры плохих файлов/` — sample vulnerable Python files from InfoSec team (test reference for security prompts)
-- `AI-scanner.zip` — pre-built deploy archive for end-users (tracked in git for easy GitHub download). Contains only the 4 essentials + a short Russian README.txt inside an `AI-scanner/` subfolder. **Rebuild after any change to the 4 essentials.**
+- `AI-scanner.zip` — pre-built deploy archive for end-users (tracked in git for easy GitHub download). Contains only `index.html`, `styles.css`, `app.js`, and `logo.png` at archive root. **Rebuild after any change to the 4 essentials.**
 
 ## Verification Loop for Reviewers
 

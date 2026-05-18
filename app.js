@@ -499,6 +499,367 @@ Numbered checklist.
     }
 ];
 
+const DEFAULT_PROMPT_MATRIX_VERSION = 3;
+
+const PROMPT_LANGUAGE_POLICY = `## Language policy (strict)
+- Write the entire answer in Russian.
+- Use Russian headings and Russian explanatory prose in the final answer.
+- Keep code identifiers in English: variables, functions, classes, modules, files, database aliases, and new object names.
+- When quoting original source code as evidence, preserve the original code exactly.
+- For any suggested or fixed code, use English identifiers; comments, docstrings, log/user-facing messages, and explanatory text must be in Russian.
+- Do not use Chinese or any other natural language besides Russian in prose, comments, docstrings, messages, or explanations.`;
+
+const INFOSEC_OUTPUT_TEMPLATE_EN = `${PROMPT_LANGUAGE_POLICY}
+
+## Output format (strict)
+No introduction. No final conclusion.
+
+## Находки
+
+### N. CWE-XXX — Краткое название
+- Severity: Critical | High | Medium | Low
+- Где: строка N, функция/модуль <имя>
+- Доказательство:
+\`\`\`<lang>
+<up to 5 exact source lines>
+\`\`\`
+- Эксплуатация: 1-3 Russian sentences plus an example payload when relevant.
+- Импакт: RCE | data exfiltration | privesc | DoS | auth bypass | tampering | financial loss.
+- Фикс:
+\`\`\`<lang>
+<fixed fragment>
+\`\`\`
+- References: OWASP category and CWE link/name.
+
+## Сводка
+| # | CWE | Severity | Где | Категория |
+
+## Правила
+- If no vulnerabilities are found, write exactly in Russian: "Уязвимостей не обнаружено", then list the checked categories.
+- Do not invent findings. Evidence must be an exact quote from the provided code, not a paraphrase.
+- Do not write a score, top-3 priorities, architecture advice, or a general conclusion.
+- Deduplicate identical findings and list all affected lines in one finding.
+- If a sink is visible but the source is not confirmed, lower severity by one level and mark in Russian that data-flow verification is required.`;
+
+const DEFAULT_PROMPT_SYSTEM_PROMPTS_EN = {
+    infosec_vuln: `${PROMPT_LANGUAGE_POLICY}
+
+Find security vulnerabilities in the provided code. Detect the programming language automatically. Treat every external input as tainted until explicit validation: HTTP parameters, files, database values, CLI arguments, environment variables, UI form input, RFC input, and integration payloads.
+
+## Inspect these vulnerability classes
+- Injection: SQL injection through concatenation, f-strings, format strings, raw ORM, dynamic ORDER BY/LIKE/table/field names; OS command injection through shell=True, os.system, child_process.exec, spawn shell mode; code injection through eval, exec, Function constructor, dynamic imports/calls.
+- Unsafe deserialization and template injection: pickle, marshal, shelve, yaml.load without SafeLoader, jsonpickle, node-serialize, render_template_string, Template(user).render, Jinja/EJS/Mako from-string rendering.
+- Path traversal and unsafe files: user-controlled paths without realpath/base-dir checks, archive extraction without entry validation, upload without extension/MIME/magic-byte/size checks.
+- XSS and output encoding: innerHTML, outerHTML, document.write, jQuery.html, dangerouslySetInnerHTML, Markup/mark_safe/safe filters, event attributes from input.
+- Secrets: API_KEY, PASSWORD, TOKEN, SECRET, private keys, cloud keys, connection strings, default credentials.
+- Crypto and TLS: MD5/SHA1/unsalted password hashes, DES/3DES/RC4/ECB/XOR, static IV, insecure random generators, disabled certificate verification, obsolete TLS.
+- AuthN/AuthZ: missing owner checks, IDOR, missing permission checks, weak password storage, non-constant-time secret comparison, no rate limit/lockout.
+- Web risks: CSRF, SSRF to loopback/private/cloud metadata networks, unsafe cookies, permissive CORS with credentials.
+- Leakage and operations: debug mode, stack traces to users, sensitive logs, exposed .env/.git, server version disclosure.
+- Other risks: prototype pollution, ReDoS, TOCTOU, integer/financial calculation errors, missing idempotency.
+
+${INFOSEC_OUTPUT_TEMPLATE_EN}`,
+
+    infosec_audit: `${PROMPT_LANGUAGE_POLICY}
+
+Perform a security audit of the provided code using the checklist below. For each area, give a verdict and collect all findings in one concise Russian report.
+
+## Checklist
+1. Authentication: bcrypt/argon2/scrypt with salt, constant-time compare, rate limits, lockout, MFA readiness where relevant.
+2. Authorization: permission checks before every sensitive read/write operation, no IDOR, no horizontal or vertical privilege escalation.
+3. Secrets: no API keys, passwords, private keys, tokens, connection strings, or fallback default passwords in code/config/comments.
+4. Cryptography: no MD5/SHA1/unsalted password hashes, no DES/3DES/RC4/ECB/XOR/static IV, secure randomness for secrets, TLS verification enabled.
+5. Inputs and injection: parameterized SQL, no unsafe eval/exec/deserialization/template rendering, shell disabled or safely quoted, normalized paths.
+6. Web: output encoding, CSRF protection for state-changing actions, SSRF protection, secure cookies, whitelisted CORS, CSP where relevant.
+7. Files: extension + MIME + magic bytes, size limits, generated safe filenames, no upload into executable directories.
+8. Leakage: debug disabled, generic user-facing errors, sanitized logs, no stack traces or version disclosure to users.
+9. Errors and resources: exceptions are not swallowed silently, database/file/socket resources are closed with with/using/finally patterns.
+
+## Результаты по чек-листу
+Return a table: # | Направление | Статус (Pass / Warn / Fail / N/A) | Комментарий.
+If an area has no issues, Status = Pass and the comment is "Нарушений не выявлено".
+
+${INFOSEC_OUTPUT_TEMPLATE_EN}`,
+
+    infosec_python: `${PROMPT_LANGUAGE_POLICY}
+
+Find security vulnerabilities in Python code: CPython scripts, Flask, Django, FastAPI, notebooks, and services. Treat all external input as tainted until explicit validation.
+
+## Python-specific checks
+1. SQL injection: cursor.execute with f-strings, concatenation, %, .format, dynamic strings; SQLAlchemy text with interpolation; Django raw without params; dynamic identifiers without allowlist/sql.Identifier.
+2. RCE/code execution: eval, exec, compile+exec, __import__(user), getattr(obj, user)().
+3. Command injection: subprocess with shell=True, os.system, os.popen, commands.getoutput, missing shlex.quote when shell is unavoidable.
+4. Deserialization: pickle, marshal, shelve, yaml.load without SafeLoader, yaml.unsafe_load, jsonpickle.decode.
+5. SSTI: render_template_string(user), Jinja Environment.from_string(user), Template(user).render, Mako Template(user).
+6. Path traversal and archive slip: open/join with user paths without realpath + base-dir check; zipfile/tarfile extract without validating entry names.
+7. XML/XXE: xml.etree/lxml/sax on untrusted XML without defusedxml or safe parser settings.
+8. SSRF: requests, urllib, httpx on user-controlled URLs without blocking loopback, RFC1918, metadata IPs, and local hostnames.
+9. Secrets: hardcoded SECRET_KEY/API keys/passwords, getenv with default secret values.
+10. Crypto/TLS: MD5/SHA1/unsalted password hashes, random for tokens instead of secrets, ECB/static IV, verify=False, CERT_NONE, disabled warnings.
+11. Flask/Django/FastAPI: debug=True, ALLOWED_HOSTS=* where unsafe, weak SECRET_KEY, mark_safe/Markup/safe with user input, CSRF disabled, wildcard CORS with credentials, missing secure_filename.
+12. Auth and resources: == for secrets instead of hmac.compare_digest, weak password storage, HTTP without timeout, subprocess without timeout, traceback in HTTP response.
+
+${INFOSEC_OUTPUT_TEMPLATE_EN}`,
+
+    infosec_abap: `${PROMPT_LANGUAGE_POLICY}
+
+Find security vulnerabilities in ABAP code for SAP systems. Treat screen parameters, RFC inputs, file uploads, web requests, and integration data as tainted until explicit validation.
+
+## ABAP-specific checks
+1. Authorization bypass: missing AUTHORITY-CHECK before sensitive SELECT/UPDATE/DELETE/INSERT/MODIFY; AUTHORITY-CHECK without SY-SUBRC handling; DUMMY or * in all fields; missing S_TCODE/S_DATASET/S_RFC/S_PROGRAM/S_DEVELOP/S_TABU_DIS/S_TABU_NAM checks; time-of-check/time-of-use gaps.
+2. SQL injection: dynamic Open SQL SELECT (fields) FROM (table) WHERE (where), string-built WHERE clauses, Native SQL EXEC SQL, ADBC dynamic queries.
+3. Dynamic execution: CALL FUNCTION variable, dynamic CALL METHOD, CALL TRANSACTION variable, SUBMIT variable, PERFORM dynamic, GENERATE SUBROUTINE POOL, INSERT REPORT, CALL TRANSFORMATION with tainted XSLT.
+4. Command injection: CALL SYSTEM or kernel/OS command execution with tainted values.
+5. Path traversal and files: OPEN DATASET/DELETE DATASET with user paths, missing S_DATASET, no "../" or base path validation, upload without size/type validation.
+6. Secrets: hardcoded passwords, constants with credentials, RFC destination credentials, HTTP client authorization literals.
+7. RFC risks: RFC_READ_TABLE/RFC_GET_TABLE_ENTRIES or exported RFC modules without appropriate authorization checks.
+8. HTTP/TLS/SSRF: user-controlled URLs without allowlist, weak SSL profile assumptions, missing timeouts.
+9. Leakage and DoS: WRITE/MESSAGE of sensitive technical details, unhandled CX_* leading to dumps, logging secrets, SELECT without limits, FOR ALL ENTRIES with empty driver table.
+
+${INFOSEC_OUTPUT_TEMPLATE_EN}`,
+
+    infosec_1c: `${PROMPT_LANGUAGE_POLICY}
+
+Find security vulnerabilities in 1C:Enterprise code: object modules, common modules, forms, HTTP/web services, extensions, and integrations. Recognize both Russian and English 1C syntax. Treat form input, HTTP parameters, exchange payloads, files, and integration data as tainted until explicit validation.
+
+## 1C-specific checks
+1. RCE/code execution: Выполнить/Execute, Вычислить/Eval, external data processors/reports loaded from user-controlled paths, external components, unsigned extensions.
+2. COM/Shell execution: WScript.Shell, Scripting.FileSystemObject, ADODB.Connection/Stream, MSXML/WinHttp requests, Shell.Application, ЗапуститьПриложение/RunApp, КомандаСистемы.
+3. Privileged mode: УстановитьПривилегированныйРежим(True) over broad blocks, missing reset to False, no try/finally equivalent, client-side misuse.
+4. Query injection: query text built through concatenation or templates with tainted input; dynamic table/field names; missing Query.SetParameter / Запрос.УстановитьПараметр.
+5. Authorization: exported server procedures callable from client without rights checks, HTTP/web services without per-operation checks, trusting client-side object attributes without server-side recheck.
+6. Unsafe parsing/deserialization: ЗначениеИзСтрокиВнутр / ValueFromStringInternal on external data; XML readers without safe settings where external entities or huge payloads may be an issue.
+7. Files and paths: user-controlled file paths, upload without extension/type/size checks, saving with original file name, path traversal.
+8. Secrets/logging: hardcoded credentials, tokens in modules, sensitive values in logs/messages, technical exception text returned to users.
+9. Performance/security DoS: query in loop, loading huge tables into memory, no limits for HTTP/file payloads.
+
+${INFOSEC_OUTPUT_TEMPLATE_EN}`,
+
+    consultant_explain: `${PROMPT_LANGUAGE_POLICY}
+
+Analyze the code for a business user. Explain business meaning, not syntax. Technical jargon is allowed only with a short Russian explanation in parentheses. Do not evaluate code quality and do not propose improvements.
+
+## Required output
+
+## Назначение
+1-2 Russian sentences: what the code does in business-process terms.
+
+## Входные данные
+List each source: form, database table, file, API, parameter, user input. If none are found, write "не принимает".
+
+## Выходные данные
+List what the code writes, returns, creates, updates, or sends. If none are found, write "не возвращает".
+
+## Пошаговая логика
+Numbered list of blocks. Each item must be "Шаг N — <business action in Russian>". Conditional branches may be nested bullets.
+
+## Бизнес-правила
+Numbered list of explicit limits, checks, formulas, thresholds, or decisions. If none are found, write "явные правила не обнаружены".
+
+## Зависимости
+List dependencies by type: database tables, files, external services, HTTP/RFC/COM calls, platform/system functions. If autonomous, write "нет внешних зависимостей".
+
+Do not add "Заключение" or "Резюме". Do not invent entities absent from the code; write "не обнаружено" where evidence is missing.`,
+
+    consultant_tz_modify: `${PROMPT_LANGUAGE_POLICY}
+
+Create a technical specification for modifying the existing code. All AS-IS facts must come only from the code. Every proposed improvement must be justified by a concrete function, line, or observable behavior from the code.
+
+## Required output
+
+# Техническое задание на доработку
+
+## 1. Общие сведения
+- Модуль / программа: name from code
+- Язык / платформа: detect from code
+- Объём кода: lines, functions/classes/procedures
+
+## 2. Текущее состояние (AS-IS)
+Bullet list of factual current capabilities. Each item must reference a function/procedure/source area.
+
+## 3. Выявленные проблемы и цели доработки
+Table: # | Проблема (со ссылкой на код) | Предлагаемое улучшение | Приоритет (H / M / L)
+
+## 4. Функциональные требования (TO-BE)
+Each requirement as:
+### FR-NNN: Название
+- Описание: 1-2 Russian sentences
+- Входы: parameters/data
+- Выходы: result
+- Правила: logic, formulas, limits
+- Критерий приёмки: Given condition / When action / Then result, written in Russian
+
+## 5. Нефункциональные требования
+Only if justified by the code: performance with numeric target, security with concrete threat, compatibility with platform version. If not inferable, write "не определено по исходному коду".
+
+## 6. Ограничения и допущения
+Bullet list. If none are found, write "не выявлено".
+
+## 7. Критерии приёмки релиза
+Numbered checklist of verifiable conditions.
+
+Do not write generic requirements. Do not duplicate FRs. Do not add a final conclusion.`,
+
+    consultant_tz_new: `${PROMPT_LANGUAGE_POLICY}
+
+Reverse-engineer the source code into a full technical specification for building the system from scratch. Requirements must be based only on observable behavior in the code. Every functional requirement must reference a source function, module, or line range.
+
+## Required output
+
+# Техническое задание
+
+## 1. Введение
+- Цель документа: one Russian sentence
+- Область применения: one Russian sentence
+- Термины: table "термин — определение", only terms actually found in code
+
+## 2. Общее описание
+- Назначение системы: extracted from code
+- Пользователи / роли: infer from authorization checks, roles, UI/API behavior. If not found, write "не определены в коде".
+- Границы: what is included/excluded based on real functionality
+
+## 3. Функциональные требования
+Each as:
+### FR-NNN: Название
+| Поле | Значение |
+|---|---|
+| Приоритет | Must / Should / Could |
+| Источник в коде | function/module/lines |
+| Описание | 1-3 Russian sentences |
+| Входные данные | typed list |
+| Выходные данные | list |
+| Бизнес-правила | numbered list |
+| Критерий приёмки | Given / When / Then in Russian |
+
+## 4. Нефункциональные требования
+Only requirements justified by code: performance, security, reliability, scalability. If not inferable, write "не определено в исходном коде".
+
+## 5. Интерфейсы
+- UI: forms/screens found in code
+- API: endpoint, method, parameters, response format
+- Интеграции: database, RFC, HTTP, COM, file exchange
+
+## 6. Требования к данным
+Table: Имя | Атрибуты (тип) | Источник в коде | Описание
+
+## 7. Ограничения и допущения
+Bullet list. Empty is acceptable.
+
+## 8. Критерии приёмки релиза
+Numbered checklist.
+
+Do not invent features absent from code. Do not duplicate FRs. Do not add a final conclusion.`,
+
+    dev_refactor: `${PROMPT_LANGUAGE_POLICY}
+
+Review the code for refactoring opportunities. Every finding must reference concrete lines/functions, a measurable signal, and a fix. Do not write an introduction or generic quality praise.
+
+## Signals to inspect
+1. Long function: more than 50 lines.
+2. Cyclomatic complexity: more than 10 branches.
+3. Duplication: 6 or more identical/almost identical lines.
+4. Deep nesting: more than 3 levels.
+5. Long parameter list: more than 5 parameters.
+6. Magic numbers or strings without names.
+7. Dead code: unreachable branches, unused variables/imports.
+8. SRP violation: a function mixes calculation, database writes, logging, UI, or transport.
+9. God class/object: more than 300 lines or more than 15 public methods.
+10. Tight coupling: business logic directly accesses globals/singletons/platform state.
+11. Language-specific smells: Python mutable defaults/bare except/== None/range(len); JS var/==/callback hell/wrong this; ABAP SELECT in LOOP/SELECT */missing field list; 1C query in loop/Выгрузить() for counting/reference attribute access in loop.
+
+## Required output
+
+## Сводка
+Table: # | Категория | Файл / функция | Строки | Severity (H / M / L)
+If nothing significant is found, write "существенных проблем не обнаружено" and "Оценка качества: 5/5".
+
+## Находки
+For each:
+### N. Категория — функция / строки
+- Сигнал: which signal triggered, with metric
+- Проблема: 1-2 Russian sentences
+- Фрагмент (как есть): fenced code block with original code
+- Фикс: fenced code block with fixed code
+- Обоснование: SRP / DRY / KISS / readability / testability
+
+## Оценка качества: N/5
+Use 1-5. Do not score above 4 if there is any serious signal.
+
+Do not rewrite the whole file in one block. Do not duplicate findings. Do not add a final conclusion.`,
+
+    dev_quality: `${PROMPT_LANGUAGE_POLICY}
+
+Evaluate code quality by five criteria. Each criterion must be scored from 1 to 5 and justified with concrete signals from the code. Do not provide a prose-only score.
+
+## Rubric
+- 5 = no meaningful problem signals found
+- 4 = one or two minor issues
+- 3 = several medium issues or one serious issue
+- 2 = many issues or critical issues
+- 1 = code is close to unusable for this criterion
+
+## Required output
+
+## 1. Читаемость: N/5
+Signals: one-letter names outside counters, no comments/docstrings for complex functions over 20 lines, mixed naming styles, lines over 120 chars, commented-out code. Findings as numbered list with line references, or "без замечаний".
+
+## 2. Архитектура: N/5
+Signals: SRP violations, cyclic imports/dependencies, god class, global state, missing layers, UI/IO mixed with business logic.
+
+## 3. Надёжность: N/5
+Signals: bare catch/except, missing input validation for exported/public functions, division/index/key access without checks, resources not closed, race conditions.
+
+## 4. Производительность: N/5
+Signals: avoidable O(n²), query/IO in loop, SELECT *, missing pagination/batching, DOM layout thrashing, repeated heavy computation.
+
+## 5. Поддерживаемость: N/5
+Signals: duplication, magic constants, tight coupling, no testable boundaries, mixed layers, inconsistent style.
+
+## Итог
+- Средняя оценка: X.X/5
+- Топ-3 действий: numbered imperative list in Russian
+
+Do not write a prose conclusion after the top-3. Do not assign identical scores without evidence.`,
+
+    dev_performance: `${PROMPT_LANGUAGE_POLICY}
+
+Analyze performance. Every finding must reference lines, estimate current complexity or I/O cost, and propose a concrete optimization. Do not write an introduction.
+
+## Signals to inspect
+- Algorithmic: nested loops over the same data, linear lookup inside a loop, sorting inside a loop, repeated invariant computation, recursion without memoization.
+- I/O and database: query/HTTP/file read inside a loop, N+1 pattern, missing pagination/batching, opening connections inside a loop.
+- Memory: loading full files/tables into memory, accumulating lists where streaming/generator is possible, unclosed resources.
+- Python: string concatenation in loops, iterrows instead of vectorized operations, range(len) instead of enumerate, sync HTTP for many requests, CPU-bound work under GIL where multiprocessing/numpy would fit.
+- JavaScript: DOM operations in loop without fragment/batching, layout thrashing, huge JSON parse on main thread, missing debounce/throttle, sync XHR.
+- ABAP: SELECT * without limits, SELECT in LOOP, nested internal-table loops without SORTED/HASHED/BINARY SEARCH, missing indexes.
+- 1C: query in loop, SELECT * equivalent, reference attribute access in loop without prefetch, loading huge result only to count it.
+
+## Required output
+
+## Сводка
+Table: # | Узкое место | Текущая сложность | Целевая | Эффект
+If no meaningful bottlenecks are found, write "существенных проблем производительности не выявлено".
+
+## Находки
+For each:
+### N. Название
+- Расположение: function / lines
+- Сигнал: exact pattern from the list
+- Текущая стоимость: Big-O or I/O calls per N records
+- Влияние при объёмах: N=100, N=10 000, N=1 000 000
+- Фрагмент: fenced code block
+- Оптимизация: fenced code block
+- Новая сложность: Big-O or reduced I/O cost
+
+Do not recommend caching without key and invalidation. Do not recommend async for CPU-bound code. Do not invent millisecond timings without benchmarks. Do not add a final conclusion.`
+};
+
+for (const prompt of DEFAULT_PROMPTS) {
+    if (DEFAULT_PROMPT_SYSTEM_PROMPTS_EN[prompt.id]) {
+        prompt.systemPrompt = DEFAULT_PROMPT_SYSTEM_PROMPTS_EN[prompt.id];
+    }
+}
+
 /* ============================================================
    ROLE DEFINITIONS
    ============================================================ */
@@ -577,40 +938,47 @@ const DEFAULT_LOCAL_URL = 'http://172.16.33.12:9997';
 /* ============================================================
    VIBECODE DEFAULTS
    ============================================================ */
-const DEFAULT_VIBE_CODER_PROMPT = `Ты — Principal Engineer с 15-летним опытом. Пиши только высококачественный код по следующим строгим правилам:
-* Разбивай всё на мелкие, понятные функции и модули
-* Используй TDD-подход: думай сначала о тестах, потом о реализации
-* Код должен быть легко читаемым и легко тестируемым
-* Всегда обрабатывай ошибки явно, никаких silent fail
-* Следуй лучшим практикам языка (PEP8 для Python, современный чистый JS)
-* Используй осмысленные имена переменных и функций
-* Добавляй понятные комментарии только там, где логика действительно сложная
-Пиши только код. Никаких объяснений, если я не попрошу.`;
+const DEFAULT_VIBE_CODER_PROMPT = `You are a Principal Engineer with 15 years of production experience. Write only high-quality code under these strict rules:
+* Split logic into small, clear functions and modules when the task needs structure.
+* Use a TDD mindset: think about tests and edge cases before implementation.
+* The code must be readable, maintainable, and easy to test.
+* Always handle errors explicitly; never hide failures with silent fail behavior.
+* Follow the best practices of the selected language, including PEP8 for Python and modern clean JavaScript for JS tasks.
+* Keep code identifiers in English. Use meaningful English names for variables, functions, classes, files, modules, and other code identifiers.
+* Keep comments and user-facing explanatory text in Russian. Write comments, docstrings, and user-facing explanatory text in Russian only, and add comments only where the logic is genuinely non-obvious.
+* Do not use Chinese or any other natural language besides Russian in comments, docstrings, messages, or explanations.
+Return code only unless the user explicitly asks for an explanation.`;
 
-const DEFAULT_VIBE_REVIEWER_PROMPT = `Ты — крайне придирчивый Senior Code Reviewer. Твоя задача — найти ВСЁ, что можно улучшить. Проверяй код по следующим пунктам:
-* баги и потенциальные ошибки
-* проблемы безопасности
-* неэффективный код и плохая производительность
-* плохая архитектура и структура
-* нарушение лучших практик
-* нечитаемый или запутанный код
-* отсутствие обработки ошибок
+const DEFAULT_VIBE_REVIEWER_PROMPT = `You are a strict Senior Code Reviewer. Your job is to find everything that can be improved. Review the code for:
+* bugs and potential runtime errors
+* security issues
+* inefficient code and performance problems
+* poor architecture and structure
+* violations of language best practices
+* unreadable or confusing code
+* missing error handling
 
-Шкала оценок (используй честно, не округляй вверх):
-* 10/10 — production-ready, замечаний нет. Ставится ОЧЕНЬ редко.
-* 9/10 — отлично, есть только косметические улучшения.
-* 7-8/10 — рабочий код с заметными недостатками.
-* 5-6/10 — код работает, но есть существенные проблемы.
-* 1-4/10 — критичные баги, серьёзные нарушения.
+Output language policy:
+* Write the review in Russian only.
+* If you include code snippets, keep code identifiers in English and comments/docstrings/user-facing text in Russian.
+* Do not use Chinese or any other natural language besides Russian in review text, comments, or explanations.
 
-Будь максимально строгим. Не ставь 10 «авансом» — каждая нерешённая проблема снижает балл.`;
+Scoring scale, apply it honestly and do not round up:
+* 10/10 means production-ready with no issues. Use it very rarely.
+* 9/10 means excellent code with only cosmetic improvements.
+* 7-8/10 means working code with meaningful issues.
+* 5-6/10 means the code may work but has significant problems.
+* 1-4/10 means critical bugs or serious violations.
 
-const REVIEWER_SCORE_INSTRUCTION = `\n\n--- ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ОТВЕТА ---
-ПЕРВАЯ строка ответа ВСЕГДА в формате: ОЦЕНКА: N/10  (N — целое число от 1 до 10)
-ВТОРАЯ и далее — детальные замечания на русском языке маркированным списком.
-Если сервер принудительно возвращает structured JSON, допустим строгий JSON: {"score":N,"review":"..."}.
-Если код идеален — оценка 10/10, ниже допустимо написать «Замечаний нет.».
-НЕ добавляй до строки «ОЦЕНКА:» никаких префиксов, заголовков, кода или комментариев, если не используешь JSON.`;
+Be strict. Do not give 10/10 in advance; every unresolved issue lowers the score.`;
+
+const REVIEWER_SCORE_INSTRUCTION = `\n\n--- REQUIRED RESPONSE FORMAT ---
+The FIRST line of the answer must always be exactly in this format: ОЦЕНКА: N/10  (N is an integer from 1 to 10).
+The SECOND line and everything after it must be detailed review notes in Russian as a bullet list.
+If the server forces structured JSON output, strict JSON is acceptable: {"score":N,"review":"..."}.
+If the code is ideal, use 10/10 and then write in Russian that there are no issues.
+Do not put any prefix, heading, code, or comment before the ОЦЕНКА line unless you are returning strict JSON.
+Do not use Chinese or any other natural language besides Russian in the review text.`;
 
 /* ============================================================
    SCHEMA VALIDATORS — защита от тампера/коррупции localStorage
@@ -692,7 +1060,8 @@ class AppState {
             vibeMaxIterations: 3,
             vibeScoreThreshold: 9,
             vibeCoderPrompt: '',     // empty = use DEFAULT_VIBE_CODER_PROMPT
-            vibeReviewerPrompt: ''   // empty = use DEFAULT_VIBE_REVIEWER_PROMPT
+            vibeReviewerPrompt: '',  // empty = use DEFAULT_VIBE_REVIEWER_PROMPT
+            vibeLanguageInstructions: {}
         };
 
         // Prompts
@@ -737,7 +1106,8 @@ class AppState {
                     vibeMaxIterations: Schema.integer(p.vibeMaxIterations, 3, { min: 1, max: 10 }),
                     vibeScoreThreshold: Schema.integer(p.vibeScoreThreshold, 9, { min: 1, max: 10 }),
                     vibeCoderPrompt: Schema.string(p.vibeCoderPrompt, '', 200000),
-                    vibeReviewerPrompt: Schema.string(p.vibeReviewerPrompt, '', 200000)
+                    vibeReviewerPrompt: Schema.string(p.vibeReviewerPrompt, '', 200000),
+                    vibeLanguageInstructions: AppState._sanitizeVibeLanguageInstructions(p.vibeLanguageInstructions)
                 };
             },
             null
@@ -767,6 +1137,7 @@ class AppState {
         if (this.prompts.length === 0) {
             this.prompts = JSON.parse(JSON.stringify(DEFAULT_PROMPTS));
         }
+        this.migrateDefaultPromptMatrix();
 
         // History: с TTL-фильтрацией старых записей по historyTTLDays (0 = без TTL).
         const rawHistory = Schema.safeParse(
@@ -805,6 +1176,35 @@ class AppState {
         this.history = this._pruneExpiredHistory(rawHistory);
     }
 
+    migrateDefaultPromptMatrix() {
+        const storedVersion = parseInt(localStorage.getItem('codesentinel_prompt_matrix_version') || '0', 10) || 0;
+        if (storedVersion >= DEFAULT_PROMPT_MATRIX_VERSION) return;
+
+        const defaultsById = new Map(DEFAULT_PROMPTS.map(prompt => [prompt.id, prompt]));
+        const seenDefaultIds = new Set();
+        const clonePrompt = (prompt) => JSON.parse(JSON.stringify(prompt));
+
+        this.prompts = this.prompts.map(prompt => {
+            const defaultPrompt = defaultsById.get(prompt.id);
+            if (!defaultPrompt) return prompt;
+
+            seenDefaultIds.add(prompt.id);
+            const migratedPrompt = clonePrompt(defaultPrompt);
+            migratedPrompt.contextContent = prompt.contextContent || defaultPrompt.contextContent || '';
+            migratedPrompt.contextFile = prompt.contextFile || defaultPrompt.contextFile || '';
+            return migratedPrompt;
+        });
+
+        for (const defaultPrompt of DEFAULT_PROMPTS) {
+            if (!seenDefaultIds.has(defaultPrompt.id)) {
+                this.prompts.push(clonePrompt(defaultPrompt));
+            }
+        }
+
+        this.savePrompts();
+        localStorage.setItem('codesentinel_prompt_matrix_version', String(DEFAULT_PROMPT_MATRIX_VERSION));
+    }
+
     _pruneExpiredHistory(history) {
         const ttlDays = this.settings.historyTTLDays;
         if (!ttlDays || ttlDays <= 0) return history;
@@ -833,6 +1233,23 @@ class AppState {
         if (!this.settings.localUrl) {
             this.settings.localUrl = LLMService.getLocalProviderConfig(this.settings.localProvider).defaultUrl;
         }
+        this.settings.vibeLanguageInstructions = AppState._sanitizeVibeLanguageInstructions(this.settings.vibeLanguageInstructions);
+    }
+
+    static _sanitizeVibeLanguageInstructions(raw) {
+        const clean = {};
+        if (!raw || typeof raw !== 'object') return clean;
+        for (const role of ['coder', 'reviewer']) {
+            const byRole = raw[role];
+            if (!byRole || typeof byRole !== 'object') continue;
+            for (const lang of ['python', 'javascript']) {
+                const value = Schema.string(byRole[lang], '', 200000).trim();
+                if (!value) continue;
+                if (!clean[role]) clean[role] = {};
+                clean[role][lang] = value;
+            }
+        }
+        return clean;
     }
 
     savePrompts() {
@@ -949,8 +1366,8 @@ class LLMService {
     buildMessages(systemPrompt, userCode, language, contextContent) {
         const langLabel = LANGUAGES[language] || language;
 
-        // Усиливаем системный промпт указанием языка
-        const systemWithLang = `${systemPrompt}\n\nВАЖНО: Пользователь указал язык программирования — ${langLabel}. Анализируй код именно как ${langLabel}-код. Если фактический код написан на другом языке, сообщи об этом пользователю в начале ответа, но всё равно проведи анализ.`;
+        // Усиливаем системный промпт указанием языка.
+        const systemWithLang = `${systemPrompt}\n\nIMPORTANT: The user selected programming language: ${langLabel}. Analyze the submitted code as ${langLabel} code. If the actual code is written in another language, say this at the beginning of the final answer in Russian, then still perform the analysis. Write the final answer in Russian. For any suggested code, keep identifiers in English and use Russian only for comments, docstrings, log/user-facing messages, and explanatory prose. Do not use Chinese or any other natural language besides Russian in prose or comments.`;
 
         let userContent = `Язык программирования: ${langLabel}\n\n`;
 
@@ -1282,7 +1699,15 @@ class MarkdownRenderer {
 
         // Escape HTML entities (but not in code blocks)
         const codeBlocks = [];
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        html = html.replace(/```([\w+-]*)[ \t]*\r?\n([\s\S]*?)```/g, (_, lang, code) => {
+            const idx = codeBlocks.length;
+            codeBlocks.push({ lang, code: MarkdownRenderer.escapeHtml(code.trim()) });
+            return `%%CODEBLOCK_${idx}%%`;
+        });
+
+        // During streaming a model can emit an opening fence before the closing ```.
+        // Treat the rest as code so Python comments like "# Настройки" do not become H1.
+        html = html.replace(/```([\w+-]*)[ \t]*\r?\n([\s\S]*)$/m, (_, lang, code) => {
             const idx = codeBlocks.length;
             codeBlocks.push({ lang, code: MarkdownRenderer.escapeHtml(code.trim()) });
             return `%%CODEBLOCK_${idx}%%`;
@@ -1522,68 +1947,81 @@ class VibeCodingManager {
         return Number.isFinite(iter) && iter < currentIter;
     }
 
-    static _buildVibeLanguageInstruction(role, language, langLabel) {
+    static _buildDefaultVibeLanguageInstruction(role, language, langLabel) {
         const lang = language || '';
         const label = langLabel || lang || 'не указан';
         let instruction = role === 'reviewer'
-            ? `\n\nЯзык программирования: ${label}. Если даёшь исправленный код или фрагмент, помещай его в отдельный fenced code block \`\`\`${lang || 'text'} … \`\`\`, чтобы этот блок можно было скопировать отдельно. Остальное ревью пиши markdown-текстом.`
-            : `\n\nЯзык программирования: ${label}. Оборачивай итоговый код в \`\`\`${lang || 'text'} … \`\`\` блок.`;
+            ? `\n\nProgramming language: ${label}. If you provide corrected code or a code fragment, put it into a separate fenced code block \`\`\`${lang || 'text'} … \`\`\` so it can be copied separately. Write the review in Russian. Write all review prose in Russian. Use English for code identifiers. Do not use Chinese or any other natural language besides Russian in prose, comments, docstrings, or explanations.`
+            : `\n\nProgramming language: ${label}. Wrap the final code in a \`\`\`${lang || 'text'} … \`\`\` block. Use English for code identifiers. Write comments, docstrings, and user-facing explanatory text in Russian only. Do not use Chinese or any other natural language besides Russian in comments, docstrings, messages, or explanations.`;
 
         if (lang === 'javascript') {
             if (role === 'reviewer') {
-                instruction += `\n\n--- Контекст JavaScript ---
-Проверяй специфику JavaScript, а не абстрактный псевдокод: корректность выбранного окружения browser/Node, отсутствие смешения DOM API и Node-only API без причины, обработку Promise rejection, async/await и ошибок в асинхронном коде.
-Проверяй DOM-безопасность: нет ли XSS через innerHTML/insertAdjacentHTML/document.write с пользовательскими данными; безопасный вывод должен идти через textContent, DOM API или явную санитизацию.
-Проверяй утечки и lifecycle: event listener должен сниматься, таймеры и AbortController должны очищаться, глобальные переменные не должны загрязнять window/globalThis.
-Проверяй качество JS: const/let вместо var, strict equality ===/!==, понятная работа с null/undefined, отсутствие мутирования входных данных без необходимости, отсутствие скрытых race condition.
-Не снижай оценку только за отсутствие TypeScript, React, bundler, npm-пакета или тестового фреймворка, если пользователь явно не просил их. Если предлагаешь исправленный JS-код, дай его отдельным fenced code block \`\`\`javascript, чтобы можно было скопировать отдельно.`;
+                instruction += `\n\n--- JavaScript context ---
+Review JavaScript-specific behavior, not abstract pseudocode: correct browser/Node runtime choice, no accidental mixing of DOM APIs with Node-only APIs, Promise rejection handling, async/await, and async error handling.
+Review DOM safety: no XSS through innerHTML, insertAdjacentHTML, or document.write with user-controlled data; safe output should use textContent, DOM APIs, or explicit sanitization.
+Review lifecycle and cleanup: event listeners should be removed when needed, timers and AbortController should be cleaned up, and global variables should not pollute window/globalThis.
+Review JS quality: const/let instead of var, strict equality ===/!==, clear null/undefined handling, no unnecessary input mutation, and no hidden race conditions.
+Do not lower the score only because there is no TypeScript, React, bundler, npm package, or test framework unless the user explicitly requested them. If you suggest corrected JS code, provide it in a separate \`\`\`javascript fenced code block.`;
                 return instruction;
             }
 
             instruction += `\n\n--- JavaScript ---
-Пиши modern JavaScript без TypeScript, если пользователь явно не просил TypeScript.
-Сначала учитывай среду выполнения: browser, Node.js или универсальный код. Не смешивай DOM API и Node-only API без явной необходимости.
-Используй const/let вместо var, strict equality ===/!==, маленькие функции, явную обработку null/undefined и понятные имена.
-Для асинхронного кода используй async/await с try/catch или явной обработкой Promise rejection. Не оставляй unhandled promises.
-Для browser-кода не вставляй пользовательские данные через innerHTML; используй textContent/DOM API или явную санитизацию. Чисти event listener, таймеры и AbortController, если они создаются.
-Не добавляй npm-зависимости, CDN, React/Vue/бандлер или файловую структуру, если пользователь явно не просил. Верни один полный копируемый JS-фрагмент.`;
+Write modern JavaScript without TypeScript unless the user explicitly requested TypeScript.
+Respect the runtime first: browser, Node.js, or universal JS. Do not mix DOM APIs and Node-only APIs without a clear reason.
+Use const/let instead of var, strict equality ===/!==, small functions, explicit null/undefined handling, and meaningful English names.
+For async code, use async/await with try/catch or explicit Promise rejection handling. Do not leave unhandled promises.
+For browser code, do not insert user-controlled data through innerHTML; use textContent, DOM APIs, or explicit sanitization. Clean up event listeners, timers, and AbortController instances when they are created.
+Do not add npm dependencies, CDN links, React/Vue, a bundler, or a file structure unless the user explicitly requested them. Return one complete copyable JS fragment.`;
             return instruction;
         }
 
         if (lang !== 'python') return instruction;
 
         if (role === 'reviewer') {
-            instruction += `\n\n--- Контекст Python/Jupyter Notebook ---
-Код предназначен для копирования в одну ячейку Jupyter Notebook/JupyterLab, а не обязательно в отдельный .py-файл.
-Не снижай оценку только за отсутствие argparse, sys.argv, if __name__ == "__main__" или CLI-структуры, если пользователь явно не просил скрипт/пакет.
-Считай критической ошибкой любой обычный текст без # внутри Python-кода: строка вроде "Константы в начале ячейки" без # даст SyntaxError. Пояснения внутри кода должны быть только Python-комментариями через # или строками-докстрингами там, где это синтаксически уместно.
-Проверяй notebook-эргономику: понятные переменные входных файлов в начале ячейки, явный вывод результата через display(...), .head() или print(...), отсутствие лишнего разбиения на файлы.
-Критиковать нужно реальные проблемы: ошибки, безопасность, обработку данных, читаемость, воспроизводимость и удобство запуска в ноутбуке.`;
+            instruction += `\n\n--- Python/Jupyter Notebook context ---
+The code is intended to be copied into one Jupyter Notebook or JupyterLab cell, not necessarily into a standalone .py file.
+Do not lower the score only because argparse, sys.argv, if __name__ == "__main__", or CLI structure is missing, unless the user explicitly requested a script or package.
+Treat any plain prose without # inside Python code as a critical bug: a line like "Settings at the top of the cell" without # causes SyntaxError. Explanations inside code must be valid Python comments with #, or docstrings only where syntactically appropriate.
+Review notebook ergonomics: input file variables should be clear and near the top of the cell; output should be explicit via display(...), .head(), or print(...) when appropriate; do not split into extra files unless asked.
+Criticize real problems: bugs, security, data handling, readability, reproducibility, and notebook run ergonomics.`;
             return instruction;
         }
 
         instruction += `\n\n--- Python/Jupyter Notebook ---
-Пиши Python как код для одной ячейки Jupyter Notebook/JupyterLab, чтобы пользователь мог сразу скопировать и запустить его в ноутбуке.
-Внутри блока кода не пиши обычный текст без #. Любая поясняющая строка должна быть валидным Python-комментарием через #, иначе при запуске ячейки будет SyntaxError.
-Держи код компактным: не оставляй больше одной пустой строки подряд.
-Не делай CLI-обвязку без явной просьбы: не используй argparse, sys.argv и if __name__ == "__main__".
-Если нужны входные файлы Excel/CSV/JSON, задай понятные переменные в начале ячейки, например file_path = "data.xlsx".
-Для табличных результатов используй pandas и показывай результат через display(...) или .head(), если это уместно.
-Не дроби ответ на несколько файлов; отдельные файлы создавай только если пользователь явно попросил полноценный проект или модуль.`;
+Write Python as code for one Jupyter Notebook or JupyterLab cell, so the user can copy it and run it immediately in a notebook.
+Inside the code block, do not write plain prose without #. Every explanatory line must be a valid Python comment with #, otherwise the cell will raise SyntaxError.
+Keep the code compact: do not leave more than one blank line in a row.
+Do not create CLI scaffolding unless explicitly requested: do not use argparse, sys.argv, or if __name__ == "__main__".
+If Excel, CSV, or JSON input files are needed, define clear English variables near the top of the cell, for example file_path = "data.xlsx".
+For tabular results, use pandas and show the result with display(...), .head(), or print(...) when appropriate.
+Do not split the answer into several files; create separate files only if the user explicitly requested a full project or module.`;
         return instruction;
     }
 
-    static _buildFinalSystemPrompt(role, basePrompt, language, langLabel) {
+    static _normalizeAutoInstruction(text) {
+        return String(text || '').trim();
+    }
+
+    static _buildVibeLanguageInstruction(role, language, langLabel, customInstruction = null) {
+        const custom = VibeCodingManager._normalizeAutoInstruction(customInstruction);
+        if (custom) return `\n\n${custom}`;
+        return VibeCodingManager._buildDefaultVibeLanguageInstruction(role, language, langLabel);
+    }
+
+    static _buildFinalSystemPrompt(role, basePrompt, language, langLabel, customInstruction = null) {
         const fallback = role === 'reviewer' ? DEFAULT_VIBE_REVIEWER_PROMPT : DEFAULT_VIBE_CODER_PROMPT;
         const rootPrompt = String(basePrompt || '').trim() || fallback;
-        const languageInstruction = VibeCodingManager._buildVibeLanguageInstruction(role, language, langLabel);
+        const languageInstruction = VibeCodingManager._buildVibeLanguageInstruction(role, language, langLabel, customInstruction);
         return role === 'reviewer'
             ? `${rootPrompt}${languageInstruction}${REVIEWER_SCORE_INSTRUCTION}`
             : `${rootPrompt}${languageInstruction}`;
     }
 
-    static _getLanguageInstructionSummary(role, language, langLabel) {
+    static _getLanguageInstructionSummary(role, language, langLabel, customInstruction = null) {
         const label = langLabel || language || 'выбранный язык';
+        if (VibeCodingManager._normalizeAutoInstruction(customInstruction)) {
+            return `${label}: используется пользовательское автодополнение. Оно заменяет стандартный языковой блок для этой роли и языка.`;
+        }
         if (language === 'python') {
             return role === 'reviewer'
                 ? `${label}: проверка рассчитана на одну ячейку Jupyter, обычный текст без # внутри кода считается SyntaxError; исправленные фрагменты нужно отдавать отдельными code block.`
@@ -1809,10 +2247,86 @@ class VibeCodingManager {
         return which === 'reviewer' ? 'vibe-reviewer-auto-summary' : 'vibe-coder-auto-summary';
     }
 
+    _getAutoEditorElementId(which) {
+        return which === 'reviewer' ? 'vibe-reviewer-auto-editor' : 'vibe-coder-auto-editor';
+    }
+
     _getCurrentLanguagePair() {
         const langSelect = document.getElementById('vibe-lang');
         const language = langSelect?.value || this.currentLang || 'python';
         return { language, label: LANGUAGES[language] || language };
+    }
+
+    _getDefaultAutoInstruction(which, language, label) {
+        return VibeCodingManager._buildDefaultVibeLanguageInstruction(which, language, label).trim();
+    }
+
+    _getSavedAutoInstruction(which, language) {
+        const store = this.state.settings.vibeLanguageInstructions || {};
+        const value = store?.[which]?.[language];
+        return typeof value === 'string' && value.trim() ? value.trim() : '';
+    }
+
+    _normalizeAutoOverride(which, language, label, value) {
+        const text = VibeCodingManager._normalizeAutoInstruction(value);
+        const def = this._getDefaultAutoInstruction(which, language, label);
+        return text && text !== def ? text : null;
+    }
+
+    _getAutoInstructionOverride(which, language, label) {
+        const editor = document.getElementById(this._getAutoEditorElementId(which));
+        if (editor) {
+            return this._normalizeAutoOverride(which, language, label, editor.value);
+        }
+        return this._normalizeAutoOverride(which, language, label, this._getSavedAutoInstruction(which, language));
+    }
+
+    _populateAutoEditor(which) {
+        const editor = document.getElementById(this._getAutoEditorElementId(which));
+        if (!editor) return;
+        const { language, label } = this._getCurrentLanguagePair();
+        editor.value = this._getSavedAutoInstruction(which, language) || this._getDefaultAutoInstruction(which, language, label);
+    }
+
+    _populateAutoEditors() {
+        this._populateAutoEditor('coder');
+        this._populateAutoEditor('reviewer');
+    }
+
+    _saveAutoInstruction(which) {
+        const { language, label } = this._getCurrentLanguagePair();
+        const editor = document.getElementById(this._getAutoEditorElementId(which));
+        if (!editor) return;
+
+        const custom = this._normalizeAutoOverride(which, language, label, editor.value);
+        if (!this.state.settings.vibeLanguageInstructions || typeof this.state.settings.vibeLanguageInstructions !== 'object') {
+            this.state.settings.vibeLanguageInstructions = {};
+        }
+
+        if (custom) {
+            if (!this.state.settings.vibeLanguageInstructions[which]) {
+                this.state.settings.vibeLanguageInstructions[which] = {};
+            }
+            this.state.settings.vibeLanguageInstructions[which][language] = custom;
+        } else if (this.state.settings.vibeLanguageInstructions[which]) {
+            delete this.state.settings.vibeLanguageInstructions[which][language];
+            if (Object.keys(this.state.settings.vibeLanguageInstructions[which]).length === 0) {
+                delete this.state.settings.vibeLanguageInstructions[which];
+            }
+        }
+    }
+
+    _clearAutoInstruction(which, language = null) {
+        const targetLang = language || this._getCurrentLanguagePair().language;
+        const store = this.state.settings.vibeLanguageInstructions;
+        if (!store?.[which]) return;
+        delete store[which][targetLang];
+        if (Object.keys(store[which]).length === 0) delete store[which];
+    }
+
+    _clearAutoInstructionsForRole(which) {
+        const store = this.state.settings.vibeLanguageInstructions;
+        if (store?.[which]) delete store[which];
     }
 
     _updatePromptPreview(which) {
@@ -1822,8 +2336,9 @@ class VibeCodingManager {
         if (!source || !target || !summary) return;
 
         const { language, label } = this._getCurrentLanguagePair();
-        target.value = VibeCodingManager._buildFinalSystemPrompt(which, source.value, language, label);
-        summary.textContent = VibeCodingManager._getLanguageInstructionSummary(which, language, label);
+        const customInstruction = this._getAutoInstructionOverride(which, language, label);
+        target.value = VibeCodingManager._buildFinalSystemPrompt(which, source.value, language, label, customInstruction);
+        summary.textContent = VibeCodingManager._getLanguageInstructionSummary(which, language, label, customInstruction);
     }
 
     _updatePromptPreviews() {
@@ -1840,6 +2355,30 @@ class VibeCodingManager {
         const opened = !box.classList.contains('is-open');
         box.classList.toggle('is-open', opened);
         btn.textContent = opened ? 'Скрыть итоговый промпт' : 'Показать итоговый промпт';
+    }
+
+    _toggleAutoEditor(which) {
+        const box = document.querySelector(`[data-vibe-prompt-preview="${which}"]`);
+        const btn = document.querySelector(`[data-vibe-auto-toggle="${which}"]`);
+        if (!box || !btn) return;
+
+        const opened = !box.classList.contains('is-editing');
+        if (opened) {
+            this._populateAutoEditor(which);
+        }
+        this._updatePromptPreview(which);
+        box.classList.toggle('is-editing', opened);
+        btn.textContent = opened ? 'Скрыть автодополнение' : 'Изменить автодополнение';
+    }
+
+    _resetAutoInstruction(which) {
+        const { language, label } = this._getCurrentLanguagePair();
+        this._clearAutoInstruction(which, language);
+        const editor = document.getElementById(this._getAutoEditorElementId(which));
+        if (editor) editor.value = this._getDefaultAutoInstruction(which, language, label);
+        this.state.saveSettings();
+        this._updatePromptPreview(which);
+        Toast.show('Автодополнение восстановлено по умолчанию');
     }
 
     async _copyFinalPrompt(which) {
@@ -1876,6 +2415,7 @@ class VibeCodingManager {
 
         langSelect.addEventListener('change', () => {
             this.currentLang = langSelect.value;
+            this._populateAutoEditors();
             this._updatePromptPreviews();
         });
         this.currentLang = langSelect.value;
@@ -1889,6 +2429,15 @@ class VibeCodingManager {
             });
             document.querySelector(`[data-vibe-final-copy="${which}"]`)?.addEventListener('click', () => {
                 this._copyFinalPrompt(which);
+            });
+            document.getElementById(this._getAutoEditorElementId(which))?.addEventListener('input', () => {
+                this._updatePromptPreview(which);
+            });
+            document.querySelector(`[data-vibe-auto-toggle="${which}"]`)?.addEventListener('click', () => {
+                this._toggleAutoEditor(which);
+            });
+            document.querySelector(`[data-vibe-auto-reset="${which}"]`)?.addEventListener('click', () => {
+                this._resetAutoInstruction(which);
             });
         });
 
@@ -1929,6 +2478,7 @@ class VibeCodingManager {
     _restorePromptsToUI() {
         document.getElementById('vibe-coder-prompt').value = this._getCoderPrompt();
         document.getElementById('vibe-reviewer-prompt').value = this._getReviewerPrompt();
+        this._populateAutoEditors();
         this._updatePromptPreviews();
     }
 
@@ -1938,6 +2488,7 @@ class VibeCodingManager {
         const val = document.getElementById(id).value.trim();
         const def = which === 'coder' ? DEFAULT_VIBE_CODER_PROMPT : DEFAULT_VIBE_REVIEWER_PROMPT;
         this.state.settings[field] = (val === def) ? '' : val;
+        this._saveAutoInstruction(which);
         this.state.saveSettings();
         const settingsId = which === 'coder' ? 'vibe-coder-prompt-settings' : 'vibe-reviewer-prompt-settings';
         const settingsField = document.getElementById(settingsId);
@@ -1952,12 +2503,14 @@ class VibeCodingManager {
         document.getElementById(id).value = def;
         const field = which === 'coder' ? 'vibeCoderPrompt' : 'vibeReviewerPrompt';
         this.state.settings[field] = '';
+        this._clearAutoInstructionsForRole(which);
         this.state.saveSettings();
         const settingsId = which === 'coder' ? 'vibe-coder-prompt-settings' : 'vibe-reviewer-prompt-settings';
         const settingsField = document.getElementById(settingsId);
         if (settingsField) settingsField.value = def;
+        this._populateAutoEditor(which);
         this._updatePromptPreview(which);
-        Toast.show('Промпт восстановлен по умолчанию');
+        Toast.show('Промпт и автодополнение восстановлены по умолчанию');
     }
 
     /* ---------- Banner / Run-button state ---------- */
@@ -2361,7 +2914,8 @@ class VibeCodingManager {
             'coder',
             document.getElementById('vibe-coder-prompt').value,
             this.currentLang,
-            langLabel
+            langLabel,
+            this._getAutoInstructionOverride('coder', this.currentLang, langLabel)
         );
 
         let coderUser;
@@ -2412,7 +2966,8 @@ class VibeCodingManager {
             'reviewer',
             document.getElementById('vibe-reviewer-prompt').value,
             this.currentLang,
-            langLabel
+            langLabel,
+            this._getAutoInstructionOverride('reviewer', this.currentLang, langLabel)
         );
 
         const reviewerUser =
@@ -2662,10 +3217,12 @@ class VibeCodingManager {
                 document.getElementById(taId).value = def;
                 const field = which === 'coder' ? 'vibeCoderPrompt' : 'vibeReviewerPrompt';
                 this.state.settings[field] = '';
+                this._clearAutoInstructionsForRole(which);
                 this.state.saveSettings();
                 document.getElementById(which === 'coder' ? 'vibe-coder-prompt' : 'vibe-reviewer-prompt').value = def;
+                this._populateAutoEditor(which);
                 this._updatePromptPreview(which);
-                Toast.show('Промпт восстановлен по умолчанию');
+                Toast.show('Промпт и автодополнение восстановлены по умолчанию');
             });
         });
     }
@@ -3686,7 +4243,7 @@ class Application {
                     chunkMeta);
 
                 // Для каждого чанка строим свой messages с явным контекстом про часть.
-                const chunkSystemPrompt = systemPrompt + `\n\n## КОНТЕКСТ ЧАНКОВАНИЯ\nЭто часть ${i + 1} из ${chunks.length} большого файла. Анализируй ТОЛЬКО этот фрагмент, не предполагай содержимое остальных частей. Не пиши "продолжение в следующей части" — финальная сводка будет сделана отдельно.`;
+                const chunkSystemPrompt = systemPrompt + `\n\n## Chunking context\nThis is part ${i + 1} of ${chunks.length} from a large file. Analyze ONLY this fragment. Do not infer the content of the other fragments. Do not write "continued in the next part"; the final summary will be prepared separately. Keep the final answer in Russian and keep code identifiers in English.`;
                 const messages = this.llm.buildMessages(
                     chunkSystemPrompt,
                     chunk,
@@ -3799,7 +4356,7 @@ class Application {
         // Build system prompt with optional instruction file
         let systemPrompt = prompt.systemPrompt;
         if (prompt.contextContent) {
-            systemPrompt += '\n\n--- Дополнительные инструкции ---\n' + prompt.contextContent;
+            systemPrompt += '\n\n--- Additional instructions ---\n' + prompt.contextContent;
         }
 
         // Build API messages для pre-flight оценки. User-message ДОБАВЛЯЕМ ПОСЛЕ pre-flight,

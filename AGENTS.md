@@ -76,7 +76,7 @@ VibeCoding is a separate page with a two-model cycle:
 3. If the score is below threshold, the next coder iteration receives the previous code plus cleaned reviewer remarks.
 
 Important implementation details:
-- Settings keys: `vibeCoderModel`, `vibeReviewerModel`, `vibeMaxIterations`, `vibeScoreThreshold`, `vibeCoderPrompt`, `vibeReviewerPrompt`.
+- Settings keys: `vibeCoderModel`, `vibeReviewerModel`, `vibeMaxIterations`, `vibeScoreThreshold`, `vibeCoderPrompt`, `vibeReviewerPrompt`, `vibeLanguageInstructions`.
 - Coder and Reviewer always use the local provider configured in the main settings.
 - VibeCoding language selector intentionally exposes only `python` and `javascript` for now. ABAP and 1C remain supported in the main analysis flow, but are hidden from VibeCoding until dedicated coder/reviewer prompts exist.
 - Reviewer score parsing accepts `ОЦЕНКА: N/10`, `SCORE: N/10`, bare `N/10`, and strict/fenced JSON such as `{"score": 8}`.
@@ -84,6 +84,8 @@ Important implementation details:
 - Iterations have small top-right widgets: collapse/expand and copy. Coder copy payload is the extracted final code; Reviewer copy payload is the full review text.
 - When a newer iteration starts, older iteration cards auto-collapse. Users can reopen them with the chevron button.
 - The visible prompt textarea stores only the base prompt. `_buildFinalSystemPrompt()` appends the selected-language instruction and, for Reviewer, `REVIEWER_SCORE_INSTRUCTION`; the accordion shows this through the “Авто-добавляется...” summary and “Показать итоговый промпт” preview so the user can audit exactly what is sent to the model.
+- The selected-language instruction is editable per role and language through “Изменить автодополнение”. Custom values are stored in `settings.vibeLanguageInstructions[role][language]` and replace the default language block. The small reset button restores the current role/language auto-addition; “По умолчанию” restores both the base prompt and all custom auto-additions for that role.
+- Default Coder/Reviewer base prompts and auto-additions are written in English to keep weaker local models stable. They explicitly require Russian for review prose, comments, docstrings, and user-facing explanations; English for code identifiers; and no Chinese or other natural languages.
 - For selected language `python`, `_buildVibeLanguageInstruction()` adds notebook guidance to both Coder and Reviewer: code is intended for one Jupyter Notebook/JupyterLab cell, not a CLI `.py` file. Reviewer must not penalize missing `argparse`, `sys.argv`, or `if __name__ == "__main__"` unless the user explicitly requested a script/package. Coder must not put ordinary prose inside the Python code block unless it is a valid `#` comment/docstring; Reviewer treats bare prose lines as `SyntaxError`.
 - For selected language `javascript`, `_buildVibeLanguageInstruction()` adds JS-specific guidance to both Coder and Reviewer: respect browser vs Node.js runtime, avoid TypeScript/frameworks/deps unless requested, use modern JS (`const`/`let`, strict equality, async/await with error handling), avoid unsafe DOM insertion (`innerHTML` with user data), and review Promise/event-listener/timer cleanup issues.
 - Coder iterations render as compact code cells via `_renderCoderCellHtml()` instead of MarkdownRenderer. This prevents Python comments like `# Заголовок` from becoming markdown headings. Reviewer iterations still render as markdown because review text benefits from headings, lists, and code snippets; when Reviewer suggests corrected code, `_buildVibeLanguageInstruction()` tells it to use a fenced code block so MarkdownRenderer adds the per-block `Копировать` button.
@@ -96,6 +98,7 @@ Prompts are stored in `AppState.prompts` array. Each prompt has: `id`, `role`, `
 - **Language filtering**: prompts with `language` field only appear when matching language is selected; prompts without `language` appear for all languages
 - **Modal editing**: language selector in prompt modal (`#modal-language`); unsaved changes protection via `_hasModalUnsavedChanges()` on overlay click / Escape
 - **Instruction files**: `contextContent` appended to system prompt, persisted with prompt in localStorage
+- **Default prompt language policy**: built-in prompt matrix system prompts are overridden through `DEFAULT_PROMPT_SYSTEM_PROMPTS_EN` and versioned by `DEFAULT_PROMPT_MATRIX_VERSION` / `codesentinel_prompt_matrix_version`. The default instructions are written in English for model stability, but require the final answer in Russian, code identifiers in English, Russian comments/docstrings/user-facing messages, and no Chinese or other natural languages. Migration refreshes known built-in prompt IDs while preserving prompt instruction files (`contextContent` / `contextFile`) and user-created custom prompts.
 
 ### Two File Attachment Systems
 
@@ -151,7 +154,7 @@ CSS custom properties in `:root`. Key tokens:
 - **Fully autonomous**: no external CDN, fonts, or libraries. Must work in air-gapped corporate networks (КСПД).
 - **No build step**: pure HTML5 + CSS3 + Vanilla JS (ES6+). Opens directly in browser from filesystem.
 - **Browser compatibility**: `AbortSignal.timeout()` wrapped in polyfill; no inline `onclick` handlers (event delegation instead).
-- **Russian UI**: all labels, prompts, messages in Russian. Respond to user in Russian.
+- **Russian UI**: labels and user-facing app messages stay Russian. Default system prompts may be written in English for model stability, but must instruct the model to answer in Russian and keep code identifiers in English. Respond to user in Russian.
 - **File attachments**: only `.txt`, `.md`, `.markdown`. Max 500KB. Binary rejected via heuristic check. Extension validated in JS before reading.
 - **Copy buttons**: every AI response has copy-to-clipboard; code blocks inside responses have their own copy button (bound via event delegation).
 - **No inline event handlers**: use `addEventListener` or event delegation (`bindCodeCopyDelegation()`).

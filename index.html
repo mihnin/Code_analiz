@@ -385,10 +385,21 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                                     <button class="btn-ghost btn-sm" type="button" data-vibe-final-copy="coder" title="Скопировать итоговый промпт">
                                         <svg class="icon"><use href="#i-copy"/></svg>
                                     </button>
+                                    <button class="btn-ghost btn-sm" type="button" data-vibe-auto-reset="coder" title="Сбросить автодополнение">
+                                        <svg class="icon"><use href="#i-rerun"/></svg>
+                                    </button>
+                                    <button class="btn-outline btn-sm" type="button" data-vibe-auto-toggle="coder">
+                                        Изменить автодополнение
+                                    </button>
                                     <button class="btn-outline btn-sm" type="button" data-vibe-final-toggle="coder">
                                         Показать итоговый промпт
                                     </button>
                                 </div>
+                            </div>
+                            <div class="vibe-auto-editor-wrap">
+                                <label for="vibe-coder-auto-editor">Автодополнение Кодера для текущего языка</label>
+                                <textarea id="vibe-coder-auto-editor" class="vibe-auto-editor" spellcheck="false"></textarea>
+                                <p>Сохраняется кнопкой «Сохранить». «По умолчанию» вернёт базовый промпт и автодополнение роли.</p>
                             </div>
                             <textarea id="vibe-coder-final-prompt" class="vibe-final-prompt" readonly spellcheck="false" aria-label="Итоговый системный промпт Кодера"></textarea>
                         </div>
@@ -434,10 +445,21 @@ PDF/DOCX — скопируйте текст и вставьте сюда." spel
                                     <button class="btn-ghost btn-sm" type="button" data-vibe-final-copy="reviewer" title="Скопировать итоговый промпт">
                                         <svg class="icon"><use href="#i-copy"/></svg>
                                     </button>
+                                    <button class="btn-ghost btn-sm" type="button" data-vibe-auto-reset="reviewer" title="Сбросить автодополнение">
+                                        <svg class="icon"><use href="#i-rerun"/></svg>
+                                    </button>
+                                    <button class="btn-outline btn-sm" type="button" data-vibe-auto-toggle="reviewer">
+                                        Изменить автодополнение
+                                    </button>
                                     <button class="btn-outline btn-sm" type="button" data-vibe-final-toggle="reviewer">
                                         Показать итоговый промпт
                                     </button>
                                 </div>
+                            </div>
+                            <div class="vibe-auto-editor-wrap">
+                                <label for="vibe-reviewer-auto-editor">Автодополнение Ревьюера для текущего языка</label>
+                                <textarea id="vibe-reviewer-auto-editor" class="vibe-auto-editor" spellcheck="false"></textarea>
+                                <p>Сохраняется кнопкой «Сохранить». «По умолчанию» вернёт базовый промпт и автодополнение роли.</p>
                             </div>
                             <textarea id="vibe-reviewer-final-prompt" class="vibe-final-prompt" readonly spellcheck="false" aria-label="Итоговый системный промпт Ревьюера"></textarea>
                         </div>
